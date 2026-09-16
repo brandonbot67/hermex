@@ -365,6 +365,36 @@ import XCTest
         catch { XCTAssertEqual(error as? BotFailure, .stale) }
     }
 
+    func testStringIDServerRequestDoesNotConsumeIntegerRPCReply() async throws {
+        BotHTTPFixture.handler = { request in
+            switch request.url!.path {
+            case "/api/status": return (200, .object(["auth_required": .bool(true), "auth_providers": .array([.string("basic")])]))
+            case "/auth/password-login": return (200, .object([:]))
+            case "/api/auth/me": return (200, .object(["provider": .string("basic")]))
+            default: return (200, .object(["ticket": .string("ticket")]))
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BotHTTPFixture.self]
+        let socket = BotScriptedSocket()
+        let client = BotClient(connection: connection(), configuration: configuration) { _, _ in socket }
+        try await client.connect()
+        let received = expectation(description: "String-id request forwarded")
+        client.onEvent = { frame in
+            XCTAssertEqual(frame["id"], .string("srq-live"))
+            XCTAssertEqual(frame["method"], .string("sudo"))
+            received.fulfill()
+        }
+        socket.enqueue(.string(#"{"jsonrpc":"2.0","id":"srq-live","method":"sudo","params":{"session_id":"runtime"}}"#))
+        socket.reply = { request in .object(["id": request["id"], "result": .object(["status": .string("expired")])]) }
+        let result = try await client.call("request.answer", ["id": .string("srq-live"), "result": .object(["value": .string("")])])
+        XCTAssertEqual(result["status"], .string("expired"))
+        let locked = try await client.call("clarify.lock", ["request_id": .string("srq-batch"), "question_id": .string("q1"), "answer": .string("yes")])
+        XCTAssertEqual(locked["status"], .string("expired"))
+        await fulfillment(of: [received], timeout: 2)
+        client.close()
+    }
+
     private func connection() -> BotConnection {
         BotConnection(id: UUID(), name: "Fixture", address: URL(string: "https://hermes.example")!, username: "user", password: "fixture")
     }
@@ -418,7 +448,7 @@ private final class BotScriptedSocket: BotSocket, @unchecked Sendable {
         lock.lock(); sentRequests.append(request); lock.unlock()
     }
 
-    private func enqueue(_ frame: URLSessionWebSocketTask.Message) {
+    func enqueue(_ frame: URLSessionWebSocketTask.Message) {
         lock.lock(); sentTextFrames += 1
         let waiting = waiter; waiter = nil
         if waiting == nil { frames.append(frame) }

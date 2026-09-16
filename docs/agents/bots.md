@@ -71,77 +71,66 @@ output is text only. `message.react` and `learning.frames` are deliberately
 not wired: the snapshot carries no reactions to show back, and the frames are
 terminal-sized renders.
 
-A blocking request is whatever has parked the bot. Approvals and questions come
-from the resume snapshot's `pending_approval` and `pending_clarify`, which ride
-both the full and the `omit_messages` read, so an answer given in Desktop clears
-the card on the next snapshot and nothing polls. `BotApprovalRequest` keeps the
-host's own `choices` (`once`/`session`/`always`/`deny`, already narrowed by
-smart-approval and permanent-allow policy) and rebuilds them the way the gateway
-would when an older host omits them; `BotQuestionRequest` reads the single
-(`question`/`choices`/`multi_select`) and batch (`questions` + locked `answers`)
-clarify shapes, keeping each choice's wire label so the host strips its own
-"(Recommended)" suffix rather than the phone reconstructing it. A clarify
-outranks an approval: approvals resolve inside a tool batch, a clarify blocks the
-turn. A pending key the phone cannot address still reads as needing attention,
-without a card.
+A blocking request is whatever has parked the bot. On 0.21.2, the gateway sends
+JSON-RPC server requests with string ids and methods such as `clarify`, `sudo`,
+`secret` and `mcp.setup`. `BotClient` forwards those envelopes separately from
+sequenced events and integer-id RPC replies. Both `session.resume` (including
+`omit_messages`) and `session.events.since` restore `open_requests: [{id, method,
+params}]`. Requests belong to the current runtime. Replay always includes the
+array; resume omits it when empty. Once replay or a live request establishes the
+modern contract, an empty or omitted resume array clears the requests.
+A newer live request or cancellation cannot be overwritten by an older in-flight
+snapshot. Unknown request methods remain needs-attention without an answerable
+card. Request payloads and credential values are never cached.
 
-Answering is `approval.respond`, `clarify.respond`, `sudo.respond`,
-`secret.respond` and `mcp.setup.respond`. `BotClient` explicitly allowlists
-these response methods. Nothing is ever sent without a tap. Generation, runtime
-and request id are captured on tap and revalidated at the socket write, so a
-stale card fails closed. Three outcomes are distinguished: `resolved > 0` or
-`status: ok` is accepted; `resolved: 0` or `status: expired` means the host had
-nothing left to resolve, which is an action failure that leaves the card inert;
-a lost socket is a delivery failure whose outcome is unknown, warns, and is never
-resent, though a deliberate second answer after reconnect stays the user's call.
-A JSON-RPC error arrives over a live socket, so it reports the answer failed
-without tearing the connection down. `approval.received` only acknowledges
-delivery and is deliberately never called. Batch answers send one
-`clarify.respond` per question id and stop at the first `expired`; multi-select
-answers go as a JSON array string, which is what the host parses. A batch is
-all-or-none: the host locks every answer it is handed and reads an empty one as
-a skip, so a partial send would silently skip the questions the user never
-touched. `skipQuestion` is the deliberate none. A present `choices` array is the
-host speaking and nothing is added to it — if a future host renames the lot so
-none of it parses, only Deny is offered, because rebuilding there would invent
-an "Always allow" the host never sanctioned.
+`request.cancel {id, method, reason}` withdraws only the matching envelope.
+A disconnect drops modern requests and reconnect restores the host's current
+list, independently of replay-ring truncation. The phone never retries an answer.
+Legacy 0.21.1 hosts retain `pending_approval` / `pending_clarify` and the
+`<prefix>.request` / `<prefix>.expire` stream paths. Protocol selection follows
+the received request shape, not a version-string comparison.
 
-`sudo`, `secret`, `terminal.read`, `window.read`, `mcp.setup`, `preview.read`,
-`preview.act` and `tour` never reach a snapshot, so `BotStreamRequest` tracks
-them from `<prefix>.request` to `<prefix>.expire` and they stop the app claiming
-the bot is working. Because the stream is their only record, a sequence gap, a
-`message.start`, an idle snapshot or a lost socket drops the card rather than
-showing a stale one. `.expire` fires only on timeout, so an answered one is
-retired at dispatch instead. Replay does restore one while the ring still holds
-it: `reconcileReplay` routes missed events through `applyStreamRequest` before
-the activity reducer, so backgrounding past a credential prompt and returning
-finds it still there rather than a blocked bot that looks idle.
+`BotApprovalRequest` keeps the host's own `choices`
+(`once`/`session`/`always`/`deny`) and only rebuilds them when an older host omits
+the field. Unknown choices never invent permanent permission. Approvals still
+use `approval.respond` with the underlying queue `request_id`, which differs
+from the server-request envelope id. `resolved: 0` means already resolved.
+`approval.received` is deliberately never called.
 
-They split two ways. `sudo` and `secret` block on a value only the person has,
-and the phone sends it: `sudo.respond` and `secret.respond` take a `request_id`
-from any connected client, and the host's own terminal UI answers over the same
-methods. `BotCredentialRequest` carries the kind's `valueKey` (`password` vs
-`value`) because each handler reads one name and a mismatch answers empty. The
-field is a `SecureField`, the value is passed straight to the dispatch and held
-by no layer of the phone, and Skip sends the empty string the host documents as
-a decline — the sudo command fails, the secret tool records a skip, and the bot
-is released immediately instead of parking until the deadline.
+`BotQuestionRequest` reads single and batch clarification, including locked
+`answers` restored on reconnect. A question outranks an approval or credential
+prompt. Single questions use `request.answer({id, result: {answer}})`. Batch
+answers use one `clarify.lock({request_id, question_id, answer})` per outstanding
+question; `remaining: []` completes the batch and `status: expired` stops sending.
+Unexpected remaining questions trigger reconciliation without claiming completion.
+Multi-select answers remain JSON array strings. Skip sends an empty `answer`
+without `answers`, the host's cancel-all shape for a batch.
 
-The other six are `BotDesktopTaskRequest`: the answer is data Hermes Desktop's
-own renderer holds — its terminal scrollback, the window beneath it, its preview
-pane — so no client without that window can produce one, on a phone or anywhere
-else. Nobody types an answer at the Mac either. Each has a host deadline (30s for
-the reads, 45s for preview and tour, ten minutes for `mcp.setup`) after which the
-tool takes an empty answer and the bot carries on, so the card reports the wait
-and keeps Stop rather than sending the user to a desk.
+The phone uses the acknowledged `request.answer` proxy for both live and restored
+requests: unlike a bare response frame, it distinguishes `ok` from `expired`.
+`sudo` and `secret` send `result: {value}`; an empty value skips. Credential input
+uses a `SecureField` and passes directly to dispatch without storing the value.
+Legacy requests continue using `clarify.respond`, `sudo.respond` (`password`),
+`secret.respond` (`value`) and `mcp.setup.respond` (`result`).
 
-`mcp.setup` is the one kind a person really does walk through in Desktop, and
-the only one with anything to decline. `mayDecline` gates it separately from
-`mayAnswer` — declining is not answering, since the setup still only happens in
-Desktop — and sends `mcp.setup.respond` with `{"status": "declined"}`, which the
-tool reads as a final no and is told never to re-ask. That turns the longest
-wait in the set into one tap, and it is the reason the composer's status line
-says "handling this" only where there is genuinely nothing to do.
+`terminal.read`, `window.read`, `preview.read`, `preview.act` and `tour` require
+Desktop renderer data the phone cannot supply. Their cards report the wait and
+retain Stop. `mcp.setup` alone can be declined: `request.answer` carries
+`result: {value: "{\"status\":\"declined\"}"}`, which the host reads as a final no.
+
+Nothing is sent without a tap. Generation, runtime and request id are captured
+on tap and revalidated at socket dispatch. `ok` means accepted; `expired` means
+already answered or withdrawn. A JSON-RPC rejection leaves the connection usable.
+A lost reply has an uncertain outcome and is never automatically resent.
+
+The request contract is verified against
+[`server_requests.py`](https://github.com/NousResearch/hermes-agent/blob/3abeca16e66cad4875f7b40beb0eb54bc4a589d5/tui_gateway/server_requests.py),
+[`methods_prompt.py`](https://github.com/NousResearch/hermes-agent/blob/3abeca16e66cad4875f7b40beb0eb54bc4a589d5/tui_gateway/methods_prompt.py)
+and [`contracts/server_requests.py`](https://github.com/NousResearch/hermes-agent/blob/3abeca16e66cad4875f7b40beb0eb54bc4a589d5/tui_gateway/contracts/server_requests.py)
+at the compatibility pin. The 0.21.1 → 0.21.2 diff does not change public
+`groups.*` request/result/error shapes. Profile creation adds optional flags and
+strips channel credentials by default; canonical empty chat creation and prompt
+submission retain the shapes Hermex sends.
 
 The card renders in the transcript where the work stopped, so the command sits
 under the tool row that asked for it, and the composer's attention line doubles
@@ -374,7 +363,7 @@ Profile to those separate webui contracts.
 The typed BotClient exception for this editor admits `profiles.describe`, the
 documented `profiles.configure` fields and avatar-only `profiles.set_asset`; it is
 not a generic Profile or gateway command surface. These handler shapes were
-verified against the compatibility pin `ee35a4624fa22237a90426f5e21d8b4f2ce3a49b`
+verified against the compatibility pin `3abeca16e66cad4875f7b40beb0eb54bc4a589d5`
 (`profiles.describe`, `profiles.configure`, `profiles.set_asset`) without a live
 mutation. The local upstream checkout at `cd2bd160579d5240e52d01e2f735da55ff4242ef`
 was also inspected for drift; the editor contract remains present.
@@ -456,7 +445,7 @@ one closes on its own.
 `BotClient` admits `profiles.create`, `session.create` and `session.title` as a
 second typed exception: the create shape above, exactly the canonical-chat
 parameters, and nothing else. Handler shapes were verified against the
-compatibility pin `ee35a4624fa22237a90426f5e21d8b4f2ce3a49b`
+compatibility pin `3abeca16e66cad4875f7b40beb0eb54bc4a589d5`
 (`tui_gateway/methods_profiles.py` `profiles.create`,
 `tui_gateway/methods_session.py` `session.create` and `session.title`,
 `hermes_cli/web_routers/profiles.py` `delete_profile_endpoint`,

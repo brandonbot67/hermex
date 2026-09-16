@@ -68,6 +68,7 @@ enum BotEndpoint: String {
 
 @MainActor protocol BotTransport: AnyObject {
     var replayEpoch: String? { get }
+    /// Sequenced event params or a complete string-id server-request envelope.
     var onEvent: ((BotJSON) -> Void)? { get set }
     var onDisconnect: ((Error) -> Void)? { get set }
     func connect() async throws

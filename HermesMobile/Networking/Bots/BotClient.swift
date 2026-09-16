@@ -135,7 +135,7 @@ import Foundation
                "profiles.create", "session.create", "session.title",
                "session.list", "session.resume", "session.events.since",
                "file.attach", "prompt.submit", "session.steer", "session.redirect", "session.interrupt", "approval.respond", "clarify.respond",
-               "sudo.respond", "secret.respond", "mcp.setup.respond",
+               "sudo.respond", "secret.respond", "mcp.setup.respond", "request.answer", "clarify.lock",
                "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control"].contains(method)
         else { throw BotFailure.unsupported }
         try Self.validateProfileEditorCall(method, params)
@@ -290,6 +290,11 @@ import Foundation
 
     private func consume(_ frame: BotJSON) {
         if frame["method"].text == "event" { onEvent?(frame["params"]); return }
+        // Server requests have string ids and no replay sequence. Forward the
+        // original envelope so consumers cannot mistake them for sequenced events.
+        if frame["id"].text != nil, frame["method"].text != nil {
+            onEvent?(frame); return
+        }
         guard let id = frame["id"].integer, let continuation = pending.removeValue(forKey: id) else { return }
         deadlines.removeValue(forKey: id)?.cancel()
         if let code = frame["error"]["code"].integer {

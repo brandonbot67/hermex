@@ -12,7 +12,7 @@ struct BotConnection: Codable, Equatable, Identifiable {
 
     /// The hermes-agent release Hermex was validated against. Mirrors line 2 of
     /// `HERMES_AGENT_TESTED_SHA`; `BotConnectionVersionTests` fails when they drift.
-    static let testedHermesVersion = "0.21.1"
+    static let testedHermesVersion = "0.21.2"
 
     /// One-line note for a host running a release other than the tested one. Nil when
     /// the version matches or was never reported: the contract is validated just in

@@ -2,10 +2,9 @@ import Foundation
 
 /// A request that parks a bot's work until someone answers it.
 ///
-/// Approvals and questions are read from the resume snapshot (`pending_approval`,
-/// `pending_clarify`), so an answer given in Desktop clears them on the next read
-/// and nothing has to poll. Credential and Desktop-task requests exist only as
-/// live gateway events, because the host's snapshot does not carry them.
+/// Modern requests arrive as server-request envelopes and `open_requests`
+/// snapshots. Legacy hosts provide approval/question snapshot fields and
+/// credential/Desktop-task events instead.
 ///
 /// Only `desktopTask` is unanswerable, and not for want of a credential path: the
 /// answer is data Hermes Desktop's own window holds, so no client without that
@@ -31,6 +30,35 @@ enum BotPendingRequest: Equatable {
     var isAnswerable: Bool {
         if case .desktopTask = self { return false }
         return true
+    }
+}
+
+/// A 0.21.2 server request, received live or restored from `open_requests`.
+/// Keep the envelope id separate from approval's underlying queue request id.
+struct BotServerRequest: Equatable {
+    let id: String
+    let method: String
+    let sessionID: String
+    let pending: BotPendingRequest?
+
+    init?(_ frame: BotJSON) {
+        guard let id = frame["id"].text, !id.isEmpty,
+              let method = frame["method"].text, !method.isEmpty,
+              var params = frame["params"].fields,
+              let sessionID = params["session_id"]?.text, !sessionID.isEmpty else { return nil }
+        self.id = id
+        self.method = method
+        self.sessionID = sessionID
+        if method == "approval" {
+            pending = BotApprovalRequest(.object(params)).map(BotPendingRequest.approval)
+        } else {
+            params["request_id"] = .string(id)
+            if method == "clarify" {
+                pending = BotQuestionRequest(.object(params)).map(BotPendingRequest.question)
+            } else {
+                pending = BotStreamRequest.requested(eventType: method + ".request", payload: .object(params))?.pending
+            }
+        }
     }
 }
 
@@ -114,7 +142,7 @@ struct BotQuestionRequest: Equatable {
 
     struct Question: Identifiable, Equatable {
         /// The host's `qid`. Nil for the single-question shape, whose
-        /// `clarify.respond` carries no `question_id`.
+        /// single answer carries no `question_id`.
         let wireID: String?
         let prompt: String
         /// Empty means open-ended: free text is the only answer.
@@ -130,8 +158,7 @@ struct BotQuestionRequest: Equatable {
     let requestID: String
     let questions: [Question]
 
-    /// True when the host used the batch shape, which needs one `clarify.respond`
-    /// per question id instead of a single unkeyed answer.
+    /// Batch questions lock one answer per question id (`clarify.lock` on 0.21.2).
     var isBatch: Bool { questions.first?.wireID != nil }
     var unansweredCount: Int { questions.filter { !$0.isAnswered }.count }
 
@@ -176,9 +203,8 @@ struct BotQuestionRequest: Equatable {
     }
 }
 
-/// A blocking request the phone learns about only from the live event stream.
-/// `session.resume` carries `pending_approval` and `pending_clarify` and nothing
-/// else, so a gap in the stream loses these rather than leaving a stale card up.
+/// Credential and Desktop-task presentation shared by both protocol generations.
+/// The legacy event parser also adapts modern envelope params after id validation.
 enum BotStreamRequest: Equatable {
     case credential(BotCredentialRequest)
     case desktopTask(BotDesktopTaskRequest)
@@ -232,13 +258,10 @@ enum BotStreamRequest: Equatable {
 /// A value only the person can supply: the Mac's administrator password, or a
 /// secret the bot asked for by name.
 ///
-/// The phone answers these. `sudo.respond` and `secret.respond` take a
-/// `request_id` from any connected client — the host's own terminal UI answers
-/// them over the same methods — so routing them to Desktop was a choice, not a
-/// constraint, and it is the wrong one for someone away from their Mac. An empty
-/// value is the host's documented skip and releases the bot without one.
+/// Modern answers carry `{value}` through `request.answer`; legacy hosts use
+/// kind-specific response methods. Empty values skip without retaining a secret.
 struct BotCredentialRequest: Equatable {
-    /// The gateway event prefix, which is also the `*.respond` method's stem.
+    /// The request method and legacy event/response prefix.
     enum Kind: String, Equatable, CaseIterable {
         case sudo, secret
 
@@ -361,7 +384,7 @@ struct BotDesktopTaskRequest: Equatable {
     let requestID: String?
 }
 
-/// One question's answer on its way to `clarify.respond`. `questionID` is the
+/// One question's answer on its way to the host. `questionID` is the
 /// host's `qid` for a batch and nil for the single-question shape.
 struct BotQuestionAnswer: Equatable {
     let questionID: String?

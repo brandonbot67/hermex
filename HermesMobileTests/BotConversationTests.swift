@@ -850,6 +850,8 @@ actor BotMemoryDrafts: ChatDraftPersisting {
     var attention = false
     var pendingApproval: BotJSON?
     var pendingClarify = BotJSON.null
+    var openRequests = BotJSON.null
+    var answerRequest: ((String, [String: BotJSON]) throws -> BotJSON)?
     /// What `approval.respond` reports unblocking, and what `clarify.respond` reports.
     var approvalResolved = 1
     var clarifyStatus = "ok"
@@ -867,6 +869,7 @@ actor BotMemoryDrafts: ChatDraftPersisting {
     var beforeDispatch: ((String) -> Void)?
     var beforeSubmit: (() async -> Void)?
     var beforeResume: (() async -> Void)?
+    var transformResume: ((BotJSON) -> BotJSON)?
     var attachFile: (([String: BotJSON]) async throws -> BotJSON)?
     var imageUpload: ((Data, String, BotArtifactContext) async throws -> String)?
     func uploadImage(data: Data, filename: String, context: BotArtifactContext) async throws -> String {
@@ -897,14 +900,20 @@ actor BotMemoryDrafts: ChatDraftPersisting {
             return .object(["sessions": .array([.object(["id": .string(root), "resolved_id": .string(tip)])])])
         case "session.resume":
             await beforeResume?()
-            return .object([
+            let snapshot = BotJSON.object([
                 "session_id": .string(runtimeID), "session_key": .string(tip), "running": .bool(running),
                 "messages": .array(history), "inflight": inflight, "queued": queued,
                 "pending_approval": pendingApproval ?? (attention ? BotFixtureWire.approval() : .null),
-                "pending_clarify": pendingClarify,
+                "pending_clarify": pendingClarify, "open_requests": openRequests,
                 "todo_state": todoState,
                 "info": .object(["profile_name": .string("inbox-triage")])
             ])
+            return transformResume?(snapshot) ?? snapshot
+        case "request.answer", "clarify.lock":
+            if let respondFailure { throw respondFailure }
+            if let answerRequest { return try answerRequest(method, params) }
+            openRequests = .array([])
+            return .object(["status": .string("ok"), "remaining": .array([])])
         case "approval.respond":
             if let respondFailure { throw respondFailure }
             if approvalResolved > 0 { attention = false; pendingApproval = nil }

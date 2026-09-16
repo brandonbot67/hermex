@@ -821,3 +821,250 @@ import XCTest
         model.suspend()
     }
 }
+
+extension BotAnsweringTests {
+    private func serverRequest(_ method: String, id: String = "srq-1", session: String = "runtime",
+                               params: [String: BotJSON] = [:]) -> BotJSON {
+        .object(["jsonrpc": .string("2.0"), "id": .string(id), "method": .string(method),
+                 "params": .object(params.merging(["session_id": .string(session)]) { _, new in new })])
+    }
+
+    func testModernLiveAndRestoredCredentialsUseAcknowledgedAnswerProxy() async {
+        for kind in ["sudo", "secret"] {
+            for live in [true, false] {
+                let wire = BotFixtureWire()
+                let frame = serverRequest(kind)
+                wire.openRequests = .array(live ? [] : [frame])
+                let model = await blocked(on: wire)
+                if live { wire.onEvent?(frame) }
+                XCTAssertEqual(model.pendingRequest?.requestID, "srq-1")
+                XCTAssertEqual(model.turn, .needsAttention)
+                await model.answerCredential(action(model), value: "fixture-value")
+                let sent = wire.calls.last { $0.0 == "request.answer" }
+                XCTAssertEqual(sent?.1, ["id": .string("srq-1"),
+                                         "result": .object(["value": .string("fixture-value")])])
+                XCTAssertEqual(model.requestResolution?.outcome, .answered)
+                XCTAssertNil(model.pendingRequest)
+                XCTAssertFalse(wire.calls.contains { $0.0 == kind + ".respond" })
+                model.suspend()
+            }
+        }
+    }
+
+    func testModernSingleQuestionAndBatchSkipUseAnswerProxy() async {
+        for batch in [false, true] {
+            let wire = BotFixtureWire()
+            let params: [String: BotJSON] = batch
+                ? ["questions": .array([.object(["qid": .string("q1"), "question": .string("Where?")])])]
+                : ["question": .string("Where?")]
+            wire.openRequests = .array([serverRequest("clarify", params: params)])
+            let model = await blocked(on: wire)
+            if batch { await model.skipQuestion(action(model)) }
+            else { await model.answerQuestion(action(model), [.init(questionID: nil, text: "Here")]) }
+            XCTAssertEqual(wire.calls.last { $0.0 == "request.answer" }?.1,
+                           ["id": .string("srq-1"), "result": .object(["answer": .string(batch ? "" : "Here")])])
+            XCTAssertEqual(model.requestResolution?.outcome, .answered)
+            model.suspend()
+        }
+    }
+
+    func testModernBatchLocksRespectRemainingAndExpiration() async {
+        for status in ["ok", "expired", "completedElsewhere", "partial"] {
+            let wire = BotFixtureWire()
+            wire.openRequests = .array([serverRequest("clarify", params: [
+                "questions": .array((0...2).map { .object(["qid": .string("q\($0)"), "question": .string("Question \($0)?")]) }),
+                "answers": .object(["q0": .string("Locked before reconnect")])
+            ])])
+            var locks = 0
+            wire.answerRequest = { method, params in
+                XCTAssertEqual(method, "clarify.lock")
+                XCTAssertEqual(params["request_id"], .string("srq-1"))
+                locks += 1
+                let remaining: [BotJSON] = (status == "partial" || (status == "ok" && locks == 1)) ? [.string("q2")] : []
+                return .object(["status": .string(status == "expired" ? "expired" : "ok"), "remaining": .array(remaining)])
+            }
+            let model = await blocked(on: wire)
+            guard case .question(let question)? = model.pendingRequest else { return XCTFail("Missing restored batch") }
+            XCTAssertEqual(question.questions.first?.lockedAnswer, "Locked before reconnect")
+            await model.answerQuestion(action(model), [.init(questionID: "q1", text: "One"), .init(questionID: "q2", text: "Two")])
+            XCTAssertEqual(locks, ["ok", "partial"].contains(status) ? 2 : 1)
+            if status == "partial" {
+                XCTAssertNil(model.requestResolution)
+                XCTAssertNotNil(model.pendingRequest)
+            } else {
+                XCTAssertEqual(model.requestResolution?.outcome, status == "expired" ? .alreadyResolved : .answered)
+            }
+            model.suspend()
+        }
+    }
+
+    func testModernDesktopDeclineAndApprovalKeepDistinctResultVocabulary() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("mcp.setup")])
+        let model = await blocked(on: wire)
+        await model.declineDesktopTask(action(model))
+        XCTAssertEqual(wire.calls.last { $0.0 == "request.answer" }?.1["result"],
+                       .object(["value": .string(BotDesktopTaskRequest.declinedResult)]))
+        model.suspend()
+
+        wire.openRequests = .array([serverRequest("approval", params: BotFixtureWire.approval(id: "queue-id").fields!)])
+        await model.recover()
+        await model.respond(action(model), choice: .deny)
+        XCTAssertEqual(wire.calls.last { $0.0 == "approval.respond" }?.1["request_id"], .string("queue-id"))
+        model.suspend()
+    }
+
+    func testModernCancelMatchesEnvelopeIDAndMethodAndRejectsCapturedAnswer() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("sudo")])
+        let model = await blocked(on: wire)
+        let captured = action(model)
+        for (seq, id, method) in [(1, "other", "sudo"), (2, "srq-1", "secret"), (3, "srq-1", "sudo")] {
+            wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(Double(seq)),
+                                  "type": .string("request.cancel"),
+                                  "payload": .object(["id": .string(id), "method": .string(method), "reason": .string("timeout")])]))
+            XCTAssertEqual(model.pendingRequest == nil, seq == 3)
+        }
+        await model.answerCredential(captured, value: "never sent")
+        XCTAssertFalse(wire.calls.contains { $0.0 == "request.answer" })
+        model.suspend()
+    }
+
+    func testModernRequestsRejectForeignRuntimeAndStaleGenerationAtDispatch() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("sudo", session: "foreign")])
+        let model = await blocked(on: wire)
+        wire.onEvent?(serverRequest("sudo", session: "foreign"))
+        XCTAssertNil(model.pendingRequest)
+        wire.onEvent?(serverRequest("sudo"))
+        let captured = action(model)
+        wire.beforeDispatch = { method in
+            if method == "request.answer" { model.suspend() }
+        }
+        await model.answerCredential(captured, value: "never sent")
+        XCTAssertFalse(wire.calls.contains { $0.0 == "request.answer" })
+        wire.beforeDispatch = nil
+        wire.openRequests = .array([serverRequest("sudo")])
+        wire.runtimeID = "replacement"
+        await model.recover()
+        await model.answerCredential(captured, value: "never sent")
+        XCTAssertFalse(wire.calls.contains { $0.0 == "request.answer" })
+        model.suspend()
+    }
+
+    func testModernLostAnswerIsUncertainAndRecoveryNeverResends() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("secret")])
+        wire.respondFailure = .transport
+        let model = await blocked(on: wire)
+        await model.answerCredential(action(model), value: "fixture")
+        XCTAssertEqual(model.requestResolution?.outcome, .uncertain)
+        XCTAssertEqual(model.connectionState, .disconnected)
+        wire.respondFailure = nil
+        await model.recover()
+        XCTAssertEqual(wire.calls.filter { $0.0 == "request.answer" }.count, 1)
+        XCTAssertEqual(model.pendingRequest?.requestID, "srq-1")
+        model.suspend()
+    }
+
+    func testModernEmptySnapshotClearsRequestAndUnknownMethodStillBlocks() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("future.prompt")])
+        let model = await blocked(on: wire)
+        XCTAssertNil(model.pendingRequest)
+        XCTAssertEqual(model.turn, .needsAttention)
+        wire.openRequests = .array([])
+        model.suspend()
+        await model.recover()
+        XCTAssertNil(model.pendingRequest)
+        XCTAssertEqual(model.turn, .running)
+        model.suspend()
+    }
+    func testModernRequestsRestoreEvenWhenReplayIsTruncated() async {
+        let wire = BotFixtureWire()
+        var replay = BotFixtureWire.replay(latest: 9, truncated: true).fields!
+        replay["open_requests"] = .array([serverRequest("secret")])
+        wire.replay = .object(replay)
+        wire.openRequests = .array([serverRequest("secret")])
+        let model = await blocked(on: wire)
+        XCTAssertTrue(model.replayWasReset)
+        XCTAssertEqual(model.pendingRequest?.requestID, "srq-1")
+        XCTAssertEqual(model.turn, .needsAttention)
+        model.suspend()
+    }
+
+    func testSnapshotCannotOverwriteANewerLiveRequestOrCancellation() async {
+        for cancel in [false, true] {
+            let wire = BotFixtureWire()
+            let frame = serverRequest("secret")
+            wire.openRequests = .array(cancel ? [frame] : [])
+            let model = await blocked(on: wire)
+            wire.transformResume = { snapshot in
+                wire.transformResume = nil
+                if cancel {
+                    wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(2),
+                                          "type": .string("request.cancel"),
+                                          "payload": .object(["id": .string("srq-1"), "method": .string("secret")])]))
+                } else { wire.onEvent?(frame) }
+                wire.openRequests = .array(cancel ? [] : [frame])
+                return snapshot
+            }
+            wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(1),
+                                  "type": .string("session.info"), "payload": .object([:])]))
+            await awaitSnapshot(model)
+            XCTAssertEqual(model.pendingRequest?.requestID, cancel ? nil : "srq-1")
+            model.suspend()
+        }
+    }
+
+    func testModernReplacedRequestIsRejectedAtActualDispatch() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("sudo")])
+        let model = await blocked(on: wire)
+        wire.beforeDispatch = { method in
+            guard method == "request.answer" else { return }
+            wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(1),
+                                  "type": .string("request.cancel"),
+                                  "payload": .object(["id": .string("srq-1"), "method": .string("sudo")])]))
+            wire.onEvent?(self.serverRequest("sudo", id: "srq-2"))
+        }
+        await model.answerCredential(action(model), value: "never sent")
+        XCTAssertFalse(wire.calls.contains { $0.0 == "request.answer" })
+        XCTAssertEqual(model.pendingRequest?.requestID, "srq-2")
+        model.suspend()
+    }
+
+    func testModernResumeOmittingOpenRequestsClearsAnsweredElsewhere() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([serverRequest("secret")])
+        let model = await blocked(on: wire)
+        wire.openRequests = .null
+        wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(1),
+                              "type": .string("session.info"), "payload": .object([:])]))
+        await awaitSnapshot(model)
+        XCTAssertNil(model.pendingRequest)
+        XCTAssertEqual(model.turn, .running)
+        model.suspend()
+    }
+
+    func testCancellationOfUnseenRequestInvalidatesAnOlderSnapshot() async {
+        let wire = BotFixtureWire()
+        wire.openRequests = .array([])
+        let model = await blocked(on: wire)
+        wire.transformResume = { snapshot in
+            wire.transformResume = nil
+            var stale = snapshot.fields!
+            stale["open_requests"] = .array([self.serverRequest("secret")])
+            wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(2),
+                                  "type": .string("request.cancel"),
+                                  "payload": .object(["id": .string("srq-1"), "method": .string("secret")])]))
+            return .object(stale)
+        }
+        wire.onEvent?(.object(["session_id": .string("runtime"), "seq": .number(1),
+                              "type": .string("session.info"), "payload": .object([:])]))
+        await awaitSnapshot(model)
+        XCTAssertNil(model.pendingRequest)
+        model.suspend()
+    }
+
+}

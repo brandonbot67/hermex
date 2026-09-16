@@ -53,9 +53,11 @@ import Observation
     /// `pending_clarify`. Snapshot-owned, so an answer given in Desktop clears it
     /// on the next read without the phone polling for it.
     private(set) var blockingRequest: BotPendingRequest?
-    /// A credential prompt or a Desktop-renderer task. Neither appears in a
-    /// snapshot, so they live and die with the event stream.
+    /// A legacy credential prompt or Desktop-renderer task, owned by the event stream.
     private(set) var streamRequest: BotStreamRequest?
+    /// Nil means a legacy host. An empty array authoritatively clears modern requests.
+    private var serverRequests: [BotServerRequest]?
+    private var requestRevision = 0
     /// Set while an answer is in flight, to keep the card's controls inert.
     private(set) var answeringRequestID: String?
     /// The verdict on the request currently on screen, if it has one.
@@ -144,7 +146,11 @@ import Observation
     /// a stream request: it is the outer blocker, and the host resolves the inner
     /// one on its own deadline either way.
     var pendingRequest: BotPendingRequest? {
-        blockingRequest ?? streamRequest?.pending
+        let current = serverRequests?.compactMap(\.pending) ?? []
+        return current.first { if case .question = $0 { return true }; return false }
+            ?? blockingRequest
+            ?? current.first { if case .approval = $0 { return true }; return false }
+            ?? current.first ?? streamRequest?.pending
     }
 
     /// True when the user may answer the request on screen.
@@ -232,10 +238,12 @@ import Observation
                 promptReceipt = nil; promptReceiptPersistsWhileIdle = false
             }
             runtime = foundRuntime; epoch = foundEpoch
+            let replayRequestsRevision = requestRevision
             let replay = try await request("session.events.since", ["session_id": .string(foundRuntime), "last_seen": .number(Double(sequence))], owner: owner)
-            try reconcileReplay(replay)
+            try reconcileReplay(replay, requestsRevision: replayRequestsRevision)
+            let requestsRevision = requestRevision
             let current = try await request("session.resume", resumeParams(), owner: owner)
-            try applySnapshot(current, full: true)
+            try applySnapshot(current, full: true, requestsRevision: requestsRevision)
             try check(owner)
             let controlsContext = BotChatControls.Context(connectionID: connection.id, profile: profile.id,
                                                           runtime: foundRuntime, generation: owner)
@@ -269,11 +277,12 @@ import Observation
         return reply
     }
 
-    private func reconcileReplay(_ reply: BotJSON) throws {
+    private func reconcileReplay(_ reply: BotJSON, requestsRevision: Int) throws {
         guard let latest = reply["latest_seq"].integer, latest >= 0,
               let receivedEpoch = reply["epoch"].text, !receivedEpoch.isEmpty,
               let truncated = reply["truncated"].flag, let events = reply["events"].list else { throw BotFailure.unsupported }
         if epoch != receivedEpoch || truncated || latest < sequence { replayWasReset = true }
+        if requestsRevision == requestRevision { restoreServerRequests(reply) }
         var cursor = sequence
         var missed: [BotJSON] = []
         for event in events {
@@ -300,9 +309,8 @@ import Observation
         }
         for event in missed {
             let type = event["type"].text ?? ""
-            // Credential and Desktop-task prompts reach no snapshot, so while the
-            // ring still holds them replay is the only way back to one after a
-            // reconnect. Dropping them here left a blocked bot looking idle.
+            // Legacy credential/Desktop-task prompts have only replay events;
+            // modern prompts were restored from open_requests above.
             if applyStreamRequest(type: type, payload: event["payload"]) { continue }
             applyActivity(type: type, payload: event["payload"])
         }
@@ -327,7 +335,7 @@ import Observation
         return true
     }
 
-    private func applySnapshot(_ snapshot: BotJSON, full: Bool, settingsRevision: Int? = nil) throws {
+    private func applySnapshot(_ snapshot: BotJSON, full: Bool, settingsRevision: Int? = nil, requestsRevision: Int? = nil) throws {
         guard snapshot["session_id"].text == runtime, snapshot["session_key"].text == tip,
               let running = snapshot["running"].flag, snapshot["hydrating"].flag != true else { throw BotFailure.unsupported }
         if let value = snapshot["info"]["profile_name"].text, value != profile.id { throw BotFailure.wrongIdentity }
@@ -367,10 +375,13 @@ import Observation
             // instead of vanishing on the inflight read that first reports idle.
             if full { liveActivity.clearTurnWork() }
         }
-        applyPendingRequest(snapshot)
+        if requestsRevision == nil || requestsRevision == requestRevision {
+            restoreServerRequests(snapshot)
+            applyPendingRequest(snapshot)
+        }
         // A request the phone cannot address still blocks the bot. Claiming the
         // turn is running would be the lie; attention without a card is the truth.
-        let attention = pendingRequest != nil
+        let attention = pendingRequest != nil || serverRequests?.isEmpty == false
             || snapshot["pending_approval"] != .null || snapshot["pending_clarify"] != .null
         let continuation = snapshot["auto_continue"] != .null && snapshot["auto_continue"].flag != false
         let queued = snapshot["queued"] != .null
@@ -398,7 +409,7 @@ import Observation
     /// the whole turn. A different request id drops the previous request's verdict
     /// so a new card is never born inert.
     private func applyPendingRequest(_ snapshot: BotJSON) {
-        let question = BotQuestionRequest(snapshot["pending_clarify"]).map(BotPendingRequest.question)
+        let question = serverRequests == nil ? BotQuestionRequest(snapshot["pending_clarify"]).map(BotPendingRequest.question) : nil
         let approval = BotApprovalRequest(snapshot["pending_approval"]).map(BotPendingRequest.approval)
         let next = question ?? approval
         if next?.requestID != blockingRequest?.requestID {
@@ -406,6 +417,30 @@ import Observation
             if requestResolution?.requestID != next?.requestID { requestResolution = nil }
         }
         blockingRequest = next
+    }
+
+    private func restoreServerRequests(_ snapshot: BotJSON) {
+        // 0.21.2 omits empty open_requests from resume; replay always carries it.
+        // Once this socket has established the modern contract, omission clears.
+        guard let rows = snapshot["open_requests"].list else {
+            if serverRequests != nil { serverRequests = [] }
+            return
+        }
+        serverRequests = rows.compactMap(BotServerRequest.init).filter { $0.sessionID == runtime }
+        streamRequest = nil
+    }
+
+    private func usesServerRequest(_ action: AnswerAction) -> Bool {
+        serverRequests?.contains { $0.pending?.requestID == action.requestID } == true
+    }
+
+    /// The proxy gives a definitive ok/expired receipt for both live and restored
+    /// requests, unlike a bare JSON-RPC response which has no acknowledgment.
+    private func answerServerRequest(_ action: AnswerAction, result: [String: BotJSON]) async throws -> BotJSON {
+        let reply = try await request("request.answer", ["id": .string(action.requestID), "result": .object(result)],
+                                      owner: action.generation, validateDispatch: answerGuard(action))
+        guard ["ok", "expired"].contains(reply["status"].text ?? "") else { throw BotFailure.unsupported }
+        return reply
     }
 
     func send() async {
@@ -635,9 +670,8 @@ import Observation
         guard answers.allSatisfy({ answer in
             answer.questionID.map(offered.contains) ?? !request.isBatch
         }) else { return }
-        // The host locks every answer it is handed and reads an empty one as a
-        // skip, so a partial batch would silently skip the questions the user
-        // never touched. All of them, or none: `skipQuestion` is the none.
+        // Submit every outstanding question in this tap. Skip is a separate,
+        // deliberate action; never invent an empty answer for an untouched row.
         if request.isBatch {
             let outstanding = Set(request.questions.filter { !$0.isAnswered }.compactMap(\.wireID))
             guard Set(answers.compactMap(\.questionID)) == outstanding else { return }
@@ -661,7 +695,9 @@ import Observation
         guard case .credential(let request)? = pendingRequest, request.requestID == action.requestID,
               action == prepareAnswer() else { return }
         await deliver(action) {
-            let reply = try await self.request(request.kind.respondMethod, [
+            let reply = try await self.usesServerRequest(action)
+                ? self.answerServerRequest(action, result: ["value": .string(value)])
+                : self.request(request.kind.respondMethod, [
                 "request_id": .string(action.requestID),
                 request.kind.valueKey: .string(value)
             ], owner: action.generation, validateDispatch: self.answerGuard(action))
@@ -685,7 +721,9 @@ import Observation
         guard case .desktopTask(let task)? = pendingRequest, task.requestID == action.requestID,
               task.kind.isDeclinable, action == prepareAnswer() else { return }
         await deliver(action) {
-            let reply = try await self.request(task.kind.respondMethod, [
+            let reply = try await self.usesServerRequest(action)
+                ? self.answerServerRequest(action, result: ["value": .string(BotDesktopTaskRequest.declinedResult)])
+                : self.request(task.kind.respondMethod, [
                 "request_id": .string(action.requestID),
                 "result": .string(BotDesktopTaskRequest.declinedResult)
             ], owner: action.generation, validateDispatch: self.answerGuard(action))
@@ -694,17 +732,36 @@ import Observation
     }
 
     private func dispatchAnswers(_ answers: [BotQuestionAnswer], for action: AnswerAction) async {
+        let modern = usesServerRequest(action)
         await deliver(action) {
             for answer in answers {
                 var params: [String: BotJSON] = [
                     "request_id": .string(action.requestID), "answer": .string(answer.text)
                 ]
                 if let id = answer.questionID { params["question_id"] = .string(id) }
-                let reply = try await self.request("clarify.respond", params, owner: action.generation,
+                let reply: BotJSON
+                if modern {
+                    if answer.questionID != nil {
+                        reply = try await self.request("clarify.lock", params, owner: action.generation,
+                                                       validateDispatch: self.answerGuard(action))
+                    } else {
+                        reply = try await self.answerServerRequest(action, result: ["answer": .string(answer.text)])
+                    }
+                } else {
+                    reply = try await self.request("clarify.respond", params, owner: action.generation,
                                                    validateDispatch: self.answerGuard(action))
+                }
                 // A late answer to a prompt the host already dropped comes back as
                 // `expired`; nothing was locked, so the rest have nothing to lock either.
                 if reply["status"].text == "expired" { return .alreadyResolved }
+                if modern, answer.questionID != nil {
+                    guard reply["status"].text == "ok", let remaining = reply["remaining"].list else {
+                        throw BotFailure.unsupported
+                    }
+                    // Another client may have locked the tail already.
+                    if remaining.isEmpty { return .answered }
+                    if answer == answers.last { return nil }
+                }
             }
             return .answered
         }
@@ -722,10 +779,10 @@ import Observation
     }
 
     /// Runs one answer dispatch under the rules every request kind shares. The
-    /// closure returns the host's verdict; a throw is a delivery problem, and only
-    /// a lost socket leaves the outcome unknown.
+    /// The closure returns the host's verdict, or nil for an incomplete batch
+    /// that needs reconciliation. A lost reply leaves the outcome unknown.
     private func deliver(_ action: AnswerAction,
-                         _ dispatch: () async throws -> BotRequestResolution.Outcome) async {
+                         _ dispatch: () async throws -> BotRequestResolution.Outcome?) async {
         localOperation = true
         answeringRequestID = action.requestID
         errorMessage = nil
@@ -733,11 +790,12 @@ import Observation
             let outcome = try await dispatch()
             guard action.generation == generation, !Task.isCancelled else { return }
             localOperation = false; answeringRequestID = nil
-            requestResolution = BotRequestResolution(requestID: action.requestID, outcome: outcome)
-            // Snapshots clear an approval or question; a stream request has no
-            // snapshot to clear it and the host emits `.expire` only on timeout,
-            // so an answered one is retired here or the card would outlive it.
+            requestResolution = outcome.map { BotRequestResolution(requestID: action.requestID, outcome: $0) }
+            // Retire accepted requests immediately, then reconcile with the host.
+            // A partially locked batch remains visible until the fresh snapshot.
             if streamRequest?.pending.requestID == action.requestID { streamRequest = nil }
+            if outcome != nil { serverRequests?.removeAll { $0.pending?.requestID == action.requestID } }
+            requestRevision += 1
             // The host owns what happens next; read the snapshot instead of
             // assuming the turn resumed.
             turnRevision += 1
@@ -762,11 +820,25 @@ import Observation
     }
 
     private func observe(_ event: BotJSON) {
-        guard connectionState != .disconnected, event["session_id"].text == runtime, runtime != nil else { return }
+        guard connectionState != .disconnected, runtime != nil else { return }
+        if let request = BotServerRequest(event) {
+            guard request.sessionID == runtime else { return }
+            if serverRequests == nil { serverRequests = [] }
+            if let index = serverRequests?.firstIndex(where: { $0.id == request.id }) {
+                serverRequests?[index] = request
+            } else { serverRequests?.append(request) }
+            requestRevision += 1
+            turnRevision += 1
+            if !localOperation { turn = .needsAttention }
+            snapshotDirty = true; scheduleRefresh()
+            return
+        }
+        guard event["session_id"].text == runtime else { return }
         guard let next = event["seq"].integer, next > 0 else {
             replayWasReset = true; snapshotDirty = true; fullSnapshotNeeded = true
             turnRevision += 1
             liveActivity = BotTurnActivity(); streamRequest = nil
+            serverRequests?.removeAll(); requestRevision += 1
             if !localOperation { turn = .unknown }
             scheduleRefresh(); return
         }
@@ -777,6 +849,7 @@ import Observation
             // Missed events may hold tool rows, a notice's clear or a stream
             // request's expiry; partial or stale state is worse than none.
             liveActivity = BotTurnActivity(); streamRequest = nil
+            serverRequests?.removeAll(); requestRevision += 1
             if !localOperation { turn = .unknown }
         }
         sequence = next
@@ -801,10 +874,19 @@ import Observation
         scheduleRefresh()
     }
 
-    /// Tracks the credential or Desktop-task request the event stream is
-    /// announcing or tearing down. These never reach a resume snapshot, so the
-    /// stream is the only record of them; returns true when the current one changed.
+    /// Applies modern cancellation and legacy credential/Desktop-task events.
+    /// Returns true when the pending request changed.
     private func applyStreamRequest(type: String, payload: BotJSON) -> Bool {
+        if type == "request.cancel", let id = payload["id"].text, !id.isEmpty,
+           let method = payload["method"].text, !method.isEmpty {
+            if let request = serverRequests?.first(where: { $0.id == id && $0.method == method }) {
+                serverRequests?.removeAll { $0.id == id }
+                if blockingRequest?.requestID == request.pending?.requestID { blockingRequest = nil }
+            }
+            // Even an unseen request may be present in an older in-flight snapshot.
+            requestRevision += 1
+            return true
+        }
         if let request = BotStreamRequest.requested(eventType: type, payload: payload) {
             guard streamRequest != request else { return false }
             // A new prompt inherits nothing from the one it replaces.
@@ -834,8 +916,9 @@ import Observation
                     let full = self.fullSnapshotNeeded
                     self.fullSnapshotNeeded = false
                     let settingsRevision = self.chatControls.snapshotRevision
+                    let requestsRevision = self.requestRevision
                     let reply = try await self.request("session.resume", self.resumeParams(full: full), owner: owner)
-                    try self.applySnapshot(reply, full: full, settingsRevision: settingsRevision)
+                    try self.applySnapshot(reply, full: full, settingsRevision: settingsRevision, requestsRevision: requestsRevision)
                     if self.snapshotDirty { try await Task.sleep(for: .milliseconds(250)) }
                 }
                 self.refreshTask = nil
@@ -853,7 +936,7 @@ import Observation
         refreshTask?.cancel(); refreshTask = nil
         // A stream request lives only in the stream, so a lost socket makes its
         // state unknowable. The card goes rather than lying about it.
-        streamRequest = nil; answeringRequestID = nil
+        streamRequest = nil; serverRequests = nil; answeringRequestID = nil
         connectionState = .disconnected
         turn = uncertainSend || uncertainStop ? .uncertain : .unknown
         turnRevision += 1
@@ -905,7 +988,7 @@ import Observation
         refreshTask?.cancel(); refreshTask = nil
         wire.close()
         localOperation = false; submittingPrompt = nil
-        streamRequest = nil; answeringRequestID = nil
+        streamRequest = nil; serverRequests = nil; answeringRequestID = nil
         connectionState = .disconnected; turn = .unknown
     }
 }
