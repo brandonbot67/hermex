@@ -8,6 +8,7 @@ import SwiftUI
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let inbox: BotInbox
     let onSelect: (BotProfile) -> Void
+    let onSelectRoom: (BotGroupRoom) -> Void
     @State private var query = ""
     @State private var scope: Scope = .all
     @FocusState private var searchFocused: Bool
@@ -18,8 +19,8 @@ import SwiftUI
     @State private var selectedHit: BotHistoryCache.Hit?
     let cache: BotHistoryCache
 
-    init(inbox: BotInbox, cache: BotHistoryCache = .shared, query: String = "", onSelect: @escaping (BotProfile) -> Void) {
-        self.inbox = inbox; self.cache = cache; self.onSelect = onSelect
+    init(inbox: BotInbox, cache: BotHistoryCache = .shared, query: String = "", onSelectRoom: @escaping (BotGroupRoom) -> Void = { _ in }, onSelect: @escaping (BotProfile) -> Void) {
+        self.inbox = inbox; self.cache = cache; self.onSelect = onSelect; self.onSelectRoom = onSelectRoom
         _query = State(initialValue: query)
     }
 
@@ -68,7 +69,16 @@ import SwiftUI
                         }
                         .buttonStyle(.plain)
                     }
-                    if matches.isEmpty && scope == .bots {
+                    ForEach(inbox.rooms(matching: request.query), id: \.id) { room in
+                        Button {
+                            searchFocused = false; onSelectRoom(room); dismiss()
+                        } label: {
+                            BotRoomInboxRow(room: room, roster: inbox.profiles, avatars: inbox.avatars)
+                                .padding(.horizontal, 20)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if matches.isEmpty && inbox.rooms(matching: request.query).isEmpty && scope == .bots {
                         ContentUnavailableView("No bots found", systemImage: "magnifyingglass")
                     }
                 }

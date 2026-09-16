@@ -395,6 +395,47 @@ import XCTest
         client.close()
     }
 
+    func testRoomReadAllowlistRejectsMutationsAndInvalidTypedParameters() async throws {
+        BotHTTPFixture.handler = { request in
+            switch request.url!.path {
+            case "/api/status": return (200, .object(["auth_required": .bool(true), "auth_providers": .array([.string("basic")])]))
+            case "/api/auth/me": return (200, .object(["provider": .string("basic")]))
+            case "/api/auth/ws-ticket": return (200, .object(["ticket": .string("ticket")]))
+            default: return (200, .object([:]))
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BotHTTPFixture.self]
+        let socket = BotScriptedSocket()
+        let client = BotClient(connection: connection(), configuration: configuration) { _, _ in socket }
+        try await client.connect()
+        defer { client.close() }
+        let valid: [(String, [String: BotJSON])] = [
+            ("groups.capabilities", [:]), ("groups.list", ["limit": .number(500), "offset": .number(0), "include_disbanded": .bool(false)]),
+            ("groups.state", ["room_id": .string("room:1")]),
+            ("groups.log", ["room_id": .string("room:1"), "since_seq": .number(0), "limit": .number(200)])]
+        for (method, params) in valid { _ = try await client.call(method, params) }
+        var invalid: [(String, [String: BotJSON])] = [
+            ("groups.capabilities", ["profile": .string("default")]),
+            ("groups.list", ["limit": .number(501)]), ("groups.list", ["offset": .number(-1)]),
+            ("groups.list", ["limit": .number(1.5)]), ("groups.list", ["include_disbanded": .string("true")]),
+            ("groups.state", [:]), ("groups.state", ["room_id": .string("../room")]),
+            ("groups.state", ["room_id": .string("room\n")]),
+            ("groups.state", ["room_id": .string(String(repeating: "a", count: 129))]),
+            ("groups.log", ["room_id": .string("room"), "since_seq": .number(-1)]),
+            ("groups.log", ["room_id": .string("room"), "limit": .bool(true)])]
+        invalid += ["send", "stop", "approve", "retry", "create", "rename", "disband", "promote", "demote", "replicate", "replica_state", "peer.invite", "peer.register", "peer.revoke"].map { ("groups." + $0, ["room_id": .string("room")]) }
+        for (method, params) in invalid {
+            do { _ = try await client.call(method, params); XCTFail("Invalid room call dispatched: " + method) }
+            catch { XCTAssertEqual(error as? BotFailure, .unsupported) }
+        }
+        XCTAssertEqual(socket.sentRequests.count, valid.count)
+        socket.reply = { request in .object(["id": request["id"], "error": .object([
+            "code": .number(4112), "message": .string("Expired"), "data": .object(["reason": .string("room_history_expired")])])]) }
+        do { _ = try await client.call("groups.log", ["room_id": .string("room")]); XCTFail("Expected room error") }
+        catch { XCTAssertTrue((error as? BotRoomFailure)?.expired == true) }
+    }
+
     private func connection() -> BotConnection {
         BotConnection(id: UUID(), name: "Fixture", address: URL(string: "https://hermes.example")!, username: "user", password: "fixture")
     }

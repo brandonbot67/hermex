@@ -20,6 +20,8 @@ import UIKit
     let server: URL
     private(set) var connection: BotConnection?
     private(set) var profiles: [BotProfile] = []
+    private(set) var rooms: [BotGroupRoom] = []
+    private(set) var roomCapabilities = BotRoomCapabilities(.null)
     private(set) var avatars: [String: UIImage] = [:]
     private(set) var link = Link.idle
     private(set) var errorMessage: String?
@@ -107,7 +109,7 @@ import UIKit
         close()
         do {
             let saved = try store.load(server: server)
-            if connection?.id != saved?.id { profiles = []; avatars = [:]; seen = [:] }
+            if connection?.id != saved?.id { profiles = []; avatars = [:]; seen = [:]; rooms = []; roomCapabilities = BotRoomCapabilities(.null) }
             connection = saved
             guard let saved else { link = .idle; return }
             if seen.isEmpty { seen = unread.load(connectionID: saved.id) }
@@ -124,6 +126,8 @@ import UIKit
             try await client.connect()
             guard wire === client, !Task.isCancelled else { return }
             guard await reload(client) else { return }
+            await refreshRooms(client)
+            guard wire === client, !Task.isCancelled else { return }
             link = .live
             reconnectAttempts = 0
             await refreshAvatars(client)
@@ -275,6 +279,53 @@ import UIKit
             guard wire === client, serial == reloadSerial else { return false }
             drop(client, error: error)
             return false
+        }
+    }
+
+    func roomKey(_ room: BotGroupRoom) -> BotRoomKey? {
+        connection.map { BotRoomKey(server: server, connectionID: $0.id, roomID: room.id) }
+    }
+
+    func rooms(matching query: String) -> [BotGroupRoom] {
+        guard roomCapabilities.enabled else { return [] }
+        return rooms.filter { query.isEmpty || $0.name.localizedStandardContains(query) }
+    }
+
+    func expireRoom(_ key: BotRoomKey) {
+        guard key.server == server, key.connectionID == connection?.id else { return }
+        rooms.removeAll { $0.id == key.roomID }
+        notice = String(localized: "This room’s history is no longer available.")
+    }
+
+    /// Capabilities are re-read on every inbox open/refresh, never inferred from
+    /// a mutating probe. Unsupported hosts keep their ordinary Bot inbox.
+    private func refreshRooms(_ client: any BotTransport) async {
+        do {
+            let value = try await client.call("groups.capabilities", [:])
+            guard wire === client, !Task.isCancelled else { return }
+            let capabilities = BotRoomCapabilities(value)
+            roomCapabilities = capabilities
+            guard capabilities.enabled else { rooms = []; return }
+            var found: [BotGroupRoom] = []
+            var offset = 0
+            while true {
+                let page = try await client.call("groups.list", ["limit": .number(500), "offset": .number(Double(offset))])
+                guard wire === client, !Task.isCancelled else { return }
+                guard let rows = page["rooms"].list else { throw BotFailure.unsupported }
+                found += rows.compactMap(BotGroupRoom.init).filter { !$0.disbanded }
+                guard let next = page["next_offset"].integer else { break }
+                guard next > offset else { throw BotFailure.unsupported }
+                offset = next
+            }
+            var ids = Set<String>()
+            rooms = found.filter { ids.insert($0.id).inserted }
+        } catch {
+            guard wire === client, !Task.isCancelled else { return }
+            rooms = []; roomCapabilities = BotRoomCapabilities(.null)
+            // Method absence is the expected gate on older Hermes hosts.
+            if let failure = error as? BotRoomFailure, failure.code != -32601 {
+                notice = failure.localizedDescription
+            }
         }
     }
 

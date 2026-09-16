@@ -320,7 +320,7 @@ search. Pin, Unpin, Hide and Unhide are the row's long-press menu. Desktop's
 user sections are not shown because their catalog (`bot-sections-v1`) lives in
 the Desktop renderer's `localStorage` and only an opaque `sectionId` reaches the
 phone; named section headers need upstream to publish the catalog on the host.
-`groups` are executable group rooms, not sections, and stay untouched. A
+`groups` are executable group rooms, not Desktop organization sections. Their read-only viewer is described below. A
 description of 24 characters or fewer reads as a role chip beside the name when
 the chat has a preview; the activity label is the time today, the weekday within
 the past week, otherwise month and day (`BotInboxDateLabel`). A pin or
@@ -616,3 +616,50 @@ replacing its endpoint/account, signing out, or removing its configured server
 also removes its saved messages. Removal revokes pending writes for the old
 connection; clearing rejects writes captured before the clear and permits future
 snapshots. Identical Profile names on different connections never share history.
+
+## Group rooms
+
+The gateway owns room execution. iOS may poll reads while a room is visible;
+it never orchestrates member turns, retries work, or opens the hidden
+`Group: <room_id>` sessions. There are no room push events at the tested pin.
+
+On inbox open and pull to refresh, `groups.capabilities` gates the entire Groups
+section: `driver` must be true and `methods` must include `groups.list`,
+`groups.state`, and `groups.log`. Missing capabilities hide rooms, including name
+search. The viewer has no empty Groups header. `groups.list` pages all active
+rooms; disbanded entries are excluded. Identity is configured server URL + Bot
+connection UUID + `room_id`; names and member Profiles are never room keys.
+Avatars resolve against that connection’s roster, with a placeholder for unknown
+members. Search matches room names only; no room message cache exists yet.
+
+`BotRoomReader` owns an independent socket and in-memory `BotRoomLog`. Opening
+reads state, starts at `max(0, latest_seq - 200)`, and drains log pages until
+`has_more` is false. Load earlier reads the preceding 200-event window. Duplicate
+`seq` values are ignored, events sort by sequence, and invisible/unknown kinds
+still advance the cursor. Authority epochs never reset the cursor. An authority
+change triggers a state read; a foreign gateway shows “Managed by another Hermes”.
+
+While visible and foregrounded, state reads run every two seconds when working
+or blocked and every ten seconds when idle. Log reads happen only after sequence
+advancement. Unchanged polls do not assign the transcript. Backgrounding, closing,
+and socket loss stop polling and invalidate late replies. Reconnect closes the
+old transport before opening and re-reading state/history. Closing drops the log.
+
+The transcript renders `message.user` and `message.member` with the existing
+Bot markdown renderer; member messages include their sender and roster avatar.
+`turn.failed`, `turn.cancelled`, `room.stop_requested`, and `room.renamed` are
+centered system lines. `room.activity`, `turn.settled`, `turn.deferred`,
+`authority.*`, and all unknown kinds remain invisible. Driver status reports
+room-wide working/blocked state, never an inferred active member. Pending actions
+show Desktop attention; the viewer has no composer, Stop, approval, retry, or room
+management commands. Room profiles are read-only and link to existing bot profiles.
+
+The socket allowlist admits exactly four room reads with typed parameter checks.
+Room RPC errors preserve `data.reason`: `room_history_expired` or code 4114 removes
+the room with a toast; 4123 asks for a gateway restart on the Mac. No room mutation,
+replica, peer, promotion, or demotion method is permitted.
+
+Contract: `tui_gateway/methods_groups.py` and `gateway/hosted_rooms.py` at
+`HERMES_AGENT_TESTED_SHA`; read-only tunnel checks on 2026-09-16 captured
+capabilities, the “Comms” list/state, and its empty log on 0.21.2. The checked-in
+fixture replaces the installation identity. Synthetic pages cover non-empty replay.

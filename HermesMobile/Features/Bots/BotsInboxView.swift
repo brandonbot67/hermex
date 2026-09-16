@@ -16,6 +16,9 @@ import SwiftUI
     /// rows, so a row shows no disclosure accessory and tiles sharing a row keep
     /// separate tap targets.
     @State private var openProfile: BotProfile?
+    @State private var openRoom: BotRoomKey?
+    @State private var searchedRoom: BotRoomKey?
+    @State private var expiredRoomToast: String?
 
     init(server: URL, showSessions: @escaping () -> Void) {
         self.server = server
@@ -74,11 +77,35 @@ import SwiftUI
                     .font(.subheadline).foregroundStyle(.secondary)
                     .listRowSeparator(.hidden)
                 }
+                if !inbox.rooms.isEmpty && inbox.roomCapabilities.enabled {
+                    Section("Groups") {
+                        ForEach(inbox.rooms, id: \.id) { room in
+                            if let key = inbox.roomKey(room) {
+                                Button { openRoom = key } label: {
+                                    BotRoomInboxRow(room: room, roster: inbox.profiles, avatars: inbox.avatars)
+                                }
+                                .id(key).buttonStyle(.plain).listRowSeparator(.hidden)
+                            }
+                        }
+                    }
+                }
             } else {
                 ContentUnavailableView("Connect to Hermes", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Use your existing Hermes setup to talk to your bots."))
                 Button("Connect to Hermes") { showingSetup = true }
             }
+        }
+        .overlay(alignment: .bottom) {
+            if let expiredRoomToast {
+                Text(expiredRoomToast).font(.callout).padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .padding().accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .task(id: expiredRoomToast) {
+            guard expiredRoomToast != nil else { return }
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            expiredRoomToast = nil
         }
         .listStyle(.plain)
         .navigationTitle("Bots")
@@ -112,7 +139,9 @@ import SwiftUI
             Text("Deletes this bot’s Profile on \(inbox.connection?.name ?? "Hermes"): its instructions, settings, skills, saved keys and chat history. Drafts on this phone are removed too. This cannot be undone. Hiding keeps everything and only removes it from the list.")
         }
         .sheet(isPresented: $showingSearch, onDismiss: openSearchSelection) {
-            BotSearchView(inbox: inbox) { profile in
+            BotSearchView(inbox: inbox, onSelectRoom: { room in
+                searchedRoom = inbox.roomKey(room)
+            }) { profile in
                 guard let connection = inbox.connection else { return }
                 searchedProfile = (connection.id, profile.id)
             }
@@ -120,6 +149,8 @@ import SwiftUI
         .onChange(of: inbox.connection?.id) {
             showingSearch = false
             searchedProfile = nil
+            searchedRoom = nil
+            openRoom = nil
             editSelection = nil
             creation = nil
             deleting = nil
@@ -129,6 +160,16 @@ import SwiftUI
         }
         .navigationDestination(item: $openProfile) { profile in
             if let connection = inbox.connection { chat(profile, connection) }
+        }
+        .navigationDestination(item: $openRoom) { key in
+            if let connection = inbox.connection, connection.id == key.connectionID,
+               let room = inbox.rooms.first(where: { $0.id == key.roomID }) {
+                BotRoomView(reader: BotRoomReader(key: key, connection: connection, room: room, onExpired: {
+                    inbox.expireRoom(key); openRoom = nil
+                    expiredRoomToast = String(localized: "This room’s history is no longer available.")
+                }), roster: inbox.profiles, avatars: inbox.avatars)
+                .id(key)
+            }
         }
         .navigationDestination(item: $editSelection) { selection in
             editProfile(selection)
@@ -147,7 +188,9 @@ import SwiftUI
     /// Resolve the selection again after the sheet closes so a refreshed roster
     /// or changed connection cannot open an old bot under a new identity.
     private func openSearchSelection() {
-        defer { searchedProfile = nil }
+        defer { searchedProfile = nil; searchedRoom = nil }
+        if let key = searchedRoom, key.connectionID == inbox.connection?.id,
+           inbox.rooms.contains(where: { $0.id == key.roomID }) { openRoom = key; return }
         guard let selection = searchedProfile, inbox.connection?.id == selection.connectionID else { return }
         openProfile = inbox.profiles.first { $0.id == selection.profileID }
     }

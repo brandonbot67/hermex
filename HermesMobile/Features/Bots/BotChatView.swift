@@ -279,7 +279,7 @@ import SwiftUI
 
 
 /// Before iOS 26 the toolbar draws no glass of its own, so the pill supplies a material.
-private struct BotChatTitlePillFallback: ViewModifier {
+struct BotChatTitlePillFallback: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(iOS 26, *) {
             content

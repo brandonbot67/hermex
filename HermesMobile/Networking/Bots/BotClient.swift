@@ -13,6 +13,7 @@ import Foundation
     private var artifactTasks: [UUID: Task<Data, Error>] = [:]
     private var nextID = 0
     private var settingCalls = Set<Int>()
+    private var roomCalls = Set<Int>()
     private var pending: [Int: CheckedContinuation<BotJSON, Error>] = [:]
     private var deadlines: [Int: Task<Void, Never>] = [:]
     private(set) var replayEpoch: String?
@@ -136,13 +137,16 @@ import Foundation
                "session.list", "session.resume", "session.events.since",
                "file.attach", "prompt.submit", "session.steer", "session.redirect", "session.interrupt", "approval.respond", "clarify.respond",
                "sudo.respond", "secret.respond", "mcp.setup.respond", "request.answer", "clarify.lock",
-               "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control"].contains(method)
+               "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control"].contains(method) || BotRoomRPC.methods.contains(method)
         else { throw BotFailure.unsupported }
+        try BotRoomRPC.validate(method, params)
         try Self.validateProfileEditorCall(method, params)
         try Self.validateLifecycleCall(method, params)
         guard let socket, !Task.isCancelled else { throw BotFailure.stale }
         nextID += 1
         let id = nextID
+        if BotRoomRPC.methods.contains(method) { roomCalls.insert(id) }
+        defer { roomCalls.remove(id) }
         if ["config.set", "session.cwd.set", "session.control", "model.options", "session.control.read"].contains(method) {
             settingCalls.insert(id)
         }
@@ -298,7 +302,9 @@ import Foundation
         guard let id = frame["id"].integer, let continuation = pending.removeValue(forKey: id) else { return }
         deadlines.removeValue(forKey: id)?.cancel()
         if let code = frame["error"]["code"].integer {
-            if settingCalls.contains(id) {
+            if roomCalls.contains(id) {
+                continuation.resume(throwing: BotRoomFailure(code: code, reason: frame["error"]["data"]["reason"].text))
+            } else if settingCalls.contains(id) {
                 continuation.resume(throwing: BotSettingFailure.rejected(code, frame["error"]["message"].text ?? BotFailure.rejected(code).localizedDescription))
             } else { continuation.resume(throwing: BotFailure.rejected(code)) }
         }

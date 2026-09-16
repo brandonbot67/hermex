@@ -7,6 +7,26 @@ import XCTest
 @testable import HermesMobile
 
 @MainActor final class BotChatPresentationTests: XCTestCase {
+    func testRoomViewerShowsMemberMessagesWithoutComposer() async throws {
+        let server = URL(string: "https://room.example")!
+        let connection = BotConnection(id: UUID(), name: "Fixture", address: server, username: "fixture", password: "fixture")
+        let wire = RoomWire(); wire.latest = 3; wire.kind = "message.member"
+        let room = try XCTUnwrap(BotGroupRoom(RoomFixture.room(latest: 3)))
+        let reader = BotRoomReader(key: BotRoomKey(server: server, connectionID: connection.id, roomID: room.id),
+                                   connection: connection, room: room, makeWire: { _ in wire })
+        let window = try show(NavigationStack {
+            BotRoomView(reader: reader, roster: [], avatars: [:])
+        }.environment(\.scenePhase, .inactive))
+        defer { reader.close(); close(window) }
+        await reader.open()
+        await renderFrames(8)
+        let text = try screenshot(window, name: "486-room-viewer")
+        XCTAssertTrue(text.contains("Comms"), text)
+        XCTAssertTrue(text.contains("chief-of-staff"), text)
+        XCTAssertTrue(text.contains("Message 3"), text)
+        XCTAssertFalse(descendants(window).contains { $0 is UITextView || $0 is UITextField }, "Viewer has no composer")
+    }
+
     func testLocalBotSearchShowsBotNamesAndNeverResumesWhileBrowsing() async throws {
         let server = URL(string: "https://search.example")!
         let connection = BotConnection(id: UUID(), name: "Fixture", address: server, username: "fixture", password: "fixture")
@@ -28,7 +48,7 @@ import XCTest
         XCTAssertTrue(text.contains("Apartments"), text)
         XCTAssertTrue(text.contains("Inbox"), text)
         XCTAssertNotNil(descendants(window).compactMap { $0 as? UITextField }.first { $0.isFirstResponder })
-        XCTAssertEqual(wire.calls.map { $0.0 }, ["profiles.list"])
+        XCTAssertEqual(wire.calls.map { $0.0 }, ["profiles.list", "groups.capabilities"])
     }
 
     func testMessageQueryDoesNotShowNoBotsFoundInAllScope() async throws {
