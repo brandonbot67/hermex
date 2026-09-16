@@ -9424,6 +9424,7 @@ final class ChatViewModelSendTests: XCTestCase {
 
         let didStartSecond = await viewModel.sendMessage("Keep going")
         XCTAssertTrue(didStartSecond)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 2)
@@ -9495,6 +9496,7 @@ final class ChatViewModelSendTests: XCTestCase {
 
         let didStartSecond = await viewModel.sendMessage("Continue with it")
         XCTAssertTrue(didStartSecond)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 2)
@@ -9553,7 +9555,7 @@ final class ChatViewModelSendTests: XCTestCase {
                         for: request
                     )
                 default:
-                    return try modelRouteTestResponse(
+                    return try self.modelRouteTestResponse(
                         chatStartBodies: chatStartBodies,
                         streamIDPrefix: "stream-default"
                     )(request)
@@ -9611,6 +9613,11 @@ final class ChatViewModelSendTests: XCTestCase {
                         """,
                         for: request
                     )
+                case "/api/session":
+                    return apiTestJSONResponse(
+                        #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "deepseek-v4.1-flash", "model_provider": "custom:opencode-go", "messages": []}}"#,
+                        for: request
+                    )
                 default:
                     XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                     throw URLError(.badURL)
@@ -9627,6 +9634,7 @@ final class ChatViewModelSendTests: XCTestCase {
 
         let didStartSecond = await viewModel.sendMessage("Keep going with it")
         XCTAssertTrue(didStartSecond)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 2)
@@ -9685,7 +9693,7 @@ final class ChatViewModelSendTests: XCTestCase {
                         for: request
                     )
                 default:
-                    return try modelRouteTestResponse(
+                    return try self.modelRouteTestResponse(
                         chatStartBodies: chatStartBodies,
                         streamIDPrefix: "stream-default"
                     )(request)
@@ -9717,18 +9725,28 @@ final class ChatViewModelSendTests: XCTestCase {
             streamClient: streamClient,
             sessionSummary: try makeSession(model: requestedModel, modelProvider: "custom:opencode-go")
         ) { request in
-            XCTAssertEqual(request.url?.path, "/api/chat/start")
-            return apiTestJSONResponse(
-                #"""
-                {
-                  "session_id": "session-abc",
-                  "stream_id": "stream-effective",
-                  "effective_model": "gpt-6-astra",
-                  "effective_model_provider": "openai-codex"
-                }
-                """#,
-                for: request
-            )
+            switch request.url?.path {
+            case "/api/chat/start":
+                return apiTestJSONResponse(
+                    #"""
+                    {
+                      "session_id": "session-abc",
+                      "stream_id": "stream-effective",
+                      "effective_model": "gpt-6-astra",
+                      "effective_model_provider": "openai-codex"
+                    }
+                    """#,
+                    for: request
+                )
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "@custom:opencode-go:deepseek-v4.1-flash", "model_provider": "custom:opencode-go", "messages": []}}"#,
+                    for: request
+                )
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
         }
 
         let didStart = await viewModel.sendMessage("Continue with the restored route")
@@ -9743,6 +9761,9 @@ final class ChatViewModelSendTests: XCTestCase {
         // Requested route stays authoritative.
         XCTAssertEqual(viewModel.selectedModelID, requestedModel)
         XCTAssertEqual(viewModel.selectedModelProviderID, "custom:opencode-go")
+
+        // End idle: finish the stream so no live work leaks into the next test.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -9754,20 +9775,33 @@ final class ChatViewModelSendTests: XCTestCase {
             streamClient: streamClient,
             sessionSummary: try makeSession(model: "gpt-5.4")
         ) { request in
-            XCTAssertEqual(request.url?.path, "/api/chat/start")
-            return apiTestJSONResponse(
-                #"{"session_id": "session-abc", "stream_id": "stream-legacy"}"#,
-                for: request
-            )
+            switch request.url?.path {
+            case "/api/chat/start":
+                return apiTestJSONResponse(
+                    #"{"session_id": "session-abc", "stream_id": "stream-legacy"}"#,
+                    for: request
+                )
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "gpt-5.4", "messages": []}}"#,
+                    for: request
+                )
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
         }
 
         let didStart = await viewModel.sendMessage("Plain send")
         XCTAssertTrue(didStart)
 
-        for _ in 0..<3 { await Task.yield() }
-        await Task { @MainActor in }.value
+        // The route-notice decision is made synchronously inside the send,
+        // so this assertion is deterministic without fixed yields.
         XCTAssertTrue(viewModel.pinnedLocalNotices.isEmpty)
         XCTAssertEqual(viewModel.selectedModelID, "gpt-5.4")
+
+        // End idle: finish the stream so no live work leaks into the next test.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -9814,6 +9848,11 @@ final class ChatViewModelSendTests: XCTestCase {
                 )
             case "/api/reasoning":
                 return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "gpt-6-astra", "model_provider": "openai-codex", "messages": []}}"#,
+                    for: request
+                )
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -9834,14 +9873,16 @@ final class ChatViewModelSendTests: XCTestCase {
         let didStart = await sendTask.value
         XCTAssertTrue(didStart)
 
-        for _ in 0..<3 { await Task.yield() }
-        await Task { @MainActor in }.value
-
-        // The requested route is what the user picked last; the stale
-        // mismatch must not be presented as current.
+        // The stale-reply suppression runs synchronously as the send
+        // resolves, so these assertions are deterministic without fixed
+        // yields. The requested route is what the user picked last; the
+        // stale mismatch must not be presented as current.
         XCTAssertEqual(viewModel.selectedModelID, pickedOption.id)
         XCTAssertEqual(viewModel.selectedModelProviderID, pickedOption.providerID)
         XCTAssertTrue(viewModel.pinnedLocalNotices.isEmpty)
+
+        // End idle: finish the stream so no live work leaks into the next test.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -9894,7 +9935,7 @@ final class ChatViewModelSendTests: XCTestCase {
                         for: request
                     )
                 default:
-                    return try modelRouteTestResponse(
+                    return try self.modelRouteTestResponse(
                         chatStartBodies: chatStartBodies,
                         streamIDPrefix: "stream-same-model"
                     )(request)
@@ -9909,6 +9950,7 @@ final class ChatViewModelSendTests: XCTestCase {
 
         let didStart = await viewModel.sendMessage("Continue with the restored route")
         XCTAssertTrue(didStart)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 1)
@@ -9952,6 +9994,11 @@ final class ChatViewModelSendTests: XCTestCase {
                         #"{"session_id": "session-abc", "stream_id": "stream-old-vm"}"#,
                         for: request
                     )
+                case "/api/session":
+                    return apiTestJSONResponse(
+                        #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "gpt-5.5", "model_provider": "openai", "messages": []}}"#,
+                        for: request
+                    )
                 default:
                     XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                     throw URLError(.badURL)
@@ -9976,6 +10023,7 @@ final class ChatViewModelSendTests: XCTestCase {
         // pick must still be explicit.
         let didStart = await viewModel.sendMessage("Still on the old session")
         XCTAssertTrue(didStart)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 1)
@@ -9998,27 +10046,39 @@ final class ChatViewModelSendTests: XCTestCase {
             streamClient: streamClient,
             sessionSummary: try makeSession(model: "deepseek-v4.1-flash", modelProvider: "custom:opencode-go")
         ) { request in
-            XCTAssertEqual(request.url?.path, "/api/chat/start")
-            return apiTestJSONResponse(
-                #"""
-                {
-                  "session_id": "session-abc",
-                  "stream_id": "stream-equal",
-                  "effective_model": "@custom:opencode-go:deepseek-v4.1-flash"
-                }
-                """#,
-                for: request
-            )
+            switch request.url?.path {
+            case "/api/chat/start":
+                return apiTestJSONResponse(
+                    #"""
+                    {
+                      "session_id": "session-abc",
+                      "stream_id": "stream-equal",
+                      "effective_model": "@custom:opencode-go:deepseek-v4.1-flash"
+                    }
+                    """#,
+                    for: request
+                )
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "deepseek-v4.1-flash", "model_provider": "custom:opencode-go", "messages": []}}"#,
+                    for: request
+                )
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
         }
 
         let didStart = await viewModel.sendMessage("Plain send")
         XCTAssertTrue(didStart)
 
-        for _ in 0..<3 { await Task.yield() }
-        await Task { @MainActor in }.value
+        // The route-notice decision is made synchronously inside the send.
         XCTAssertTrue(viewModel.pinnedLocalNotices.isEmpty)
         XCTAssertEqual(viewModel.selectedModelID, "deepseek-v4.1-flash")
         XCTAssertEqual(viewModel.selectedModelProviderID, "custom:opencode-go")
+
+        // End idle: finish the stream so no live work leaks into the next test.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -10034,33 +10094,43 @@ final class ChatViewModelSendTests: XCTestCase {
             streamClient: streamClient,
             sessionSummary: try makeSession(model: requestedModel, modelProvider: "custom:opencode-go")
         ) { request in
-            XCTAssertEqual(request.url?.path, "/api/chat/start")
-            chatStartBodies.append(try XCTUnwrap(apiTestJSONBody(from: request)))
-            let count = chatStartBodies.all.count
-            if count == 1 {
+            switch request.url?.path {
+            case "/api/chat/start":
+                chatStartBodies.append(try XCTUnwrap(apiTestJSONBody(from: request)))
+                let count = chatStartBodies.all.count
+                if count == 1 {
+                    return apiTestJSONResponse(
+                        #"""
+                        {
+                          "session_id": "session-abc",
+                          "stream_id": "stream-mismatch",
+                          "effective_model": "gpt-6-astra",
+                          "effective_model_provider": "openai-codex"
+                        }
+                        """#,
+                        for: request
+                    )
+                }
                 return apiTestJSONResponse(
                     #"""
                     {
                       "session_id": "session-abc",
-                      "stream_id": "stream-mismatch",
-                      "effective_model": "gpt-6-astra",
-                      "effective_model_provider": "openai-codex"
+                      "stream_id": "stream-confirmed",
+                      "effective_model": "@custom:opencode-go:deepseek-v4.1-flash",
+                      "effective_model_provider": "custom:opencode-go"
                     }
                     """#,
                     for: request
                 )
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "@custom:opencode-go:deepseek-v4.1-flash", "model_provider": "custom:opencode-go", "messages": []}}"#,
+                    for: request
+                )
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
             }
-            return apiTestJSONResponse(
-                #"""
-                {
-                  "session_id": "session-abc",
-                  "stream_id": "stream-confirmed",
-                  "effective_model": "@custom:opencode-go:deepseek-v4.1-flash",
-                  "effective_model_provider": "custom:opencode-go"
-                }
-                """#,
-                for: request
-            )
         }
 
         let didStartFirst = await viewModel.sendMessage("First send")
@@ -10081,6 +10151,10 @@ final class ChatViewModelSendTests: XCTestCase {
         )
         XCTAssertEqual(viewModel.selectedModelID, requestedModel)
         XCTAssertEqual(viewModel.selectedModelProviderID, "custom:opencode-go")
+
+        // End idle: finish the second stream so no live work (or queued
+        // transcript reload) leaks into the next test's handler.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -10092,20 +10166,32 @@ final class ChatViewModelSendTests: XCTestCase {
             streamClient: streamClient,
             sessionSummary: try makeSession(model: "gpt-5.4")
         ) { request in
-            XCTAssertEqual(request.url?.path, "/api/chat/start")
-            return apiTestJSONResponse(
-                #"{"session_id": "session-abc", "stream_id": "stream-malformed", "effective_model": {"nested": true}, "effective_model_provider": 42}"#,
-                for: request
-            )
+            switch request.url?.path {
+            case "/api/chat/start":
+                return apiTestJSONResponse(
+                    #"{"session_id": "session-abc", "stream_id": "stream-malformed", "effective_model": {"nested": true}, "effective_model_provider": 42}"#,
+                    for: request
+                )
+            case "/api/session":
+                return apiTestJSONResponse(
+                    #"{"session": {"session_id": "session-abc", "workspace": "/tmp/workspace", "model": "gpt-5.4", "messages": []}}"#,
+                    for: request
+                )
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
         }
 
         let didStart = await viewModel.sendMessage("Plain send")
         XCTAssertTrue(didStart)
 
-        for _ in 0..<3 { await Task.yield() }
-        await Task { @MainActor in }.value
+        // The lossy decode runs synchronously inside the send.
         XCTAssertTrue(viewModel.pinnedLocalNotices.isEmpty)
         XCTAssertEqual(viewModel.selectedModelID, "gpt-5.4")
+
+        // End idle: finish the stream so no live work leaks into the next test.
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
     }
 
     @MainActor
@@ -10192,7 +10278,7 @@ final class ChatViewModelSendTests: XCTestCase {
                         for: request
                     )
                 default:
-                    return try modelRouteTestResponse(
+                    return try self.modelRouteTestResponse(
                         chatStartBodies: chatStartBodies,
                         streamIDPrefix: "stream-roundtrip"
                     )(request)
@@ -10221,6 +10307,7 @@ final class ChatViewModelSendTests: XCTestCase {
         XCTAssertNotNil(secondOutcome)
         let didStartSecond = await viewModel.sendMessage("Send back on the poolops default")
         XCTAssertTrue(didStartSecond)
+        await completeStreamingTurn(streamClient, thenDrain: viewModel)
 
         let bodies = chatStartBodies.all
         XCTAssertEqual(bodies.count, 2)
