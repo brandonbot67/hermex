@@ -125,7 +125,7 @@ struct SessionListView: View {
     }
 
     var body: some View {
-        navigationContainer
+        routedNavigationContainer
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background {
                     wasBackgrounded = true
@@ -157,9 +157,6 @@ struct SessionListView: View {
             .onChange(of: requestedNewChat) { if requestedNewChat != nil { showsBots = false } }
             .onChange(of: pendingSharedImport?.reservationID) { if pendingSharedImport != nil { showsBots = false } }
             .onChange(of: isBotModeEnabled) { if !isBotModeEnabled { showsBots = false } }
-            // Cold launch delivers the link before this view appears; a warm one after.
-            .task { showBotsForPendingDestination() }
-            .onChange(of: pendingBotDestination) { showBotsForPendingDestination() }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if hasWaitingSharedImport {
                     waitingSharedImportBanner
@@ -403,6 +400,16 @@ struct SessionListView: View {
             Divider()
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// The navigation container plus bot-link routing. Kept off `body`'s modifier
+    /// chain, which is long enough that adding to it exceeds the type-checker's
+    /// budget on the CI toolchain.
+    private var routedNavigationContainer: some View {
+        navigationContainer
+            // Cold launch delivers the link before this view appears; a warm one after.
+            .task { showBotsForPendingDestination() }
+            .onChange(of: pendingBotDestination) { showBotsForPendingDestination() }
     }
 
     /// A bot deep link opens this server's Bots inbox, which owns resolving it. Only

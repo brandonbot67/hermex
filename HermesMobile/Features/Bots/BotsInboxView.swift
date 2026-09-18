@@ -31,6 +31,9 @@ import SwiftUI
     /// One-line report for something that is no longer there: a disbanded room, or a
     /// conversation a deep link named that the bot has since replaced.
     @State private var toast: String?
+    /// True once `open()` has returned at least once, so "no Bot connection" is a
+    /// settled answer to a held deep link rather than a not-loaded-yet one.
+    @State private var hasSettled = false
 
     init(
         server: URL,
@@ -211,8 +214,9 @@ import SwiftUI
         }
         // The subscription lives while the inbox is on screen and the app is active;
         // returning, refreshing and reconnecting all go through the same open().
-        .task(id: revision) { await inbox.open(); openPendingDestination() }
-        .onChange(of: pendingDestination) { if inbox.link == .live { openPendingDestination() } }
+        .task(id: revision) { await inbox.open(); hasSettled = true; openPendingDestination() }
+        .onChange(of: inbox.link) { openPendingDestination() }
+        .onChange(of: pendingDestination) { openPendingDestination() }
         .onChange(of: openProfile) { if openProfile == nil { openConversation = nil } }
         .refreshable { await inbox.open() }
         .onChange(of: scenePhase) {
@@ -223,11 +227,15 @@ import SwiftUI
     }
 
     /// Opens the bot a deep link named, once this inbox has a roster to resolve it
-    /// against. Called after `open()` settles, so a link is never dropped while the
-    /// socket is still connecting. A replaced connection or a Profile the server no
-    /// longer has leaves the user on the inbox rather than guessing (#554).
+    /// against. A connecting or retrying socket keeps the link pending, so a dropped
+    /// socket or a manual Reconnect still routes it. A replaced connection or a
+    /// Profile the server no longer has leaves the user on the inbox rather than
+    /// guessing (#554).
     private func openPendingDestination() {
         guard let destination = pendingDestination, destination.server == server else { return }
+        guard BotDeepLinkRouter.inboxCanAnswer(
+            link: inbox.link, hasConnection: inbox.connection != nil, hasSettled: hasSettled
+        ) else { return }
         pendingDestination = nil
         guard let profile = BotDeepLinkRouter.profile(
             for: destination, connection: inbox.connection, profiles: inbox.profiles
@@ -264,7 +272,7 @@ import SwiftUI
                         openProfile = nil
                         toast = String(localized: "That conversation is no longer available.")
                     })
-            .id(profile.id + connection.id.uuidString)
+            .id(profile.id + connection.id.uuidString + (openConversation ?? ""))
             .onAppear { inbox.markSeen(profile) }
             .onDisappear { inbox.noteReturn(from: profile) }
     }

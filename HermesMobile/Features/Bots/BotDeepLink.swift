@@ -125,6 +125,14 @@ enum BotDeepLinkOutcome: Equatable {
         }
     }
 
+    /// Whether an inbox in this state can answer a held link now. A live roster can.
+    /// A connecting or quietly retrying socket cannot yet, and the link waits rather
+    /// than being lost to a transient failure. An inbox that has settled with no Bot
+    /// connection at all never will, so the link is dropped instead of held forever.
+    static func inboxCanAnswer(link: BotInbox.Link, hasConnection: Bool, hasSettled: Bool) -> Bool {
+        link == .live || (hasSettled && !hasConnection)
+    }
+
     /// The bot a held destination names on the roster now on screen, or nil when the
     /// connection was replaced under it or the server no longer has that Profile.
     /// Equal Profile names on two connections never match each other.

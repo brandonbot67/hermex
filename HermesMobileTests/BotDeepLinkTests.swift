@@ -135,6 +135,18 @@ import XCTest
                                                connection: connection, profiles: profiles))
     }
 
+    func testAHeldLinkSurvivesAConnectingOrRetryingInboxButNotAMissingConnection() {
+        // Only a live roster answers a link…
+        XCTAssertTrue(BotDeepLinkRouter.inboxCanAnswer(link: .live, hasConnection: true, hasSettled: true))
+        // …a connecting or dropped socket keeps it, so a reconnect still routes it.
+        XCTAssertFalse(BotDeepLinkRouter.inboxCanAnswer(link: .connecting, hasConnection: true, hasSettled: true))
+        XCTAssertFalse(BotDeepLinkRouter.inboxCanAnswer(link: .disconnected, hasConnection: true, hasSettled: true))
+        // No Bot connection at all is a settled answer: nothing will ever resolve it.
+        XCTAssertTrue(BotDeepLinkRouter.inboxCanAnswer(link: .idle, hasConnection: false, hasSettled: true))
+        // …but not before the inbox has opened once, when nothing is loaded yet.
+        XCTAssertFalse(BotDeepLinkRouter.inboxCanAnswer(link: .idle, hasConnection: false, hasSettled: false))
+    }
+
     func testDeepLinkedConversationTheBotHasReplacedIsReportedInsteadOfOpened() async {
         let wire = BotFixtureWire()
         wire.root = "root-now"
