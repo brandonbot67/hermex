@@ -8,9 +8,14 @@ struct ContentView: View {
     @State private var hasWaitingSharedImport = false
     @State private var hasRoutedSharedImport = false
     @State private var pendingDeepLinkedSessionID: String?
+    /// The bot a deep link named, held until the owning server is active and signed
+    /// in. The session list flips to the Bots inbox, which resolves it against the
+    /// live roster (#554).
+    @State private var pendingBotDestination: BotDestination?
     @State private var pendingNewChatRequest: NewChatRequest?
     @State private var didCheckInitialPendingShare = false
     @State private var intentRouter = AppIntentRouter.shared
+    @AppStorage(BotModeGate.isEnabledKey) private var isBotModeEnabled = false
 
     var body: some View {
         content
@@ -26,6 +31,12 @@ struct ContentView: View {
             .onChange(of: intentRouter.pendingDeepLink) {
                 // Warm launch: the intent set the deep link after the view appeared.
                 drainPendingIntentDeepLink()
+            }
+            .onChange(of: authManager.state) {
+                // A held bot link resolves again once sign-in or a server switch
+                // changes what it can reach.
+                guard let destination = pendingBotDestination else { return }
+                routeBot(destination)
             }
             .task {
                 // #246: on cold launch, end any Live Activity left "running" by a
@@ -68,7 +79,8 @@ struct ContentView: View {
                 hasWaitingSharedImport: hasWaitingSharedImport,
                 openNextSharedImport: openNextSharedImport,
                 pendingDeepLinkedSessionID: $pendingDeepLinkedSessionID,
-                requestedNewChat: $pendingNewChatRequest
+                requestedNewChat: $pendingNewChatRequest,
+                pendingBotDestination: $pendingBotDestination
             )
             // Switching the active server keeps us in `.loggedIn`, so without a
             // per-server identity SwiftUI would reuse the same SessionListView (and
@@ -103,6 +115,13 @@ struct ContentView: View {
             return
         }
 
+        // A bot link carries its own server, Bot connection and Profile, so it may
+        // have to switch servers or wait for sign-in before it can open (#554).
+        if let destination = HermesDeepLink.botDestination(from: url) {
+            routeBot(destination)
+            return
+        }
+
         if let sessionID = HermesDeepLink.sessionID(from: url) {
             pendingDeepLinkedSessionID = sessionID
             return
@@ -113,6 +132,28 @@ struct ContentView: View {
         }
 
         importPendingSharedDraftIfAvailable()
+    }
+
+    /// Applies the router's verdict for a bot deep link: drop it when nothing can be
+    /// opened (Bot Mode off, server removed, connection replaced), hold it across a
+    /// sign-in, or activate its server first and let the rebuilt tree route it.
+    private func routeBot(_ destination: BotDestination) {
+        let outcome = BotDeepLinkRouter.resolve(
+            destination,
+            state: authManager.state,
+            servers: authManager.servers,
+            isBotModeEnabled: isBotModeEnabled
+        )
+
+        switch outcome {
+        case .ignore:
+            pendingBotDestination = nil
+        case .waitForSignIn(let destination), .open(let destination):
+            pendingBotDestination = destination
+        case .switchServer(let account, let destination):
+            pendingBotDestination = destination
+            authManager.switchActiveServer(to: account)
+        }
     }
 
     /// Routes a deep link queued by an App Intent through the same `handleOpenURL` parser

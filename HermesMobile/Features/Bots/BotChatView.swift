@@ -7,6 +7,10 @@ import SwiftUI
 
     @Environment(\.scenePhase) private var scenePhase
     private let mentionAvatars: [String: UIImage]
+    /// Called when this chat was opened for a conversation a deep link named and the
+    /// bot's canonical chat has since moved on, so the inbox can take the user back
+    /// instead of leaving a dead transcript on screen (#554).
+    private let onConversationUnavailable: (() -> Void)?
     @State private var model: BotConversation
     @State private var stopAction: BotConversation.StopAction?
     @State private var recoveryID = UUID()
@@ -21,13 +25,18 @@ import SwiftUI
     @State private var composerHeight: CGFloat = 52
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    init(server: URL, connection: BotConnection, profile: BotProfile, roster: [BotProfile], avatars: [String: UIImage]) {
+    init(server: URL, connection: BotConnection, profile: BotProfile, roster: [BotProfile],
+         avatars: [String: UIImage], conversation: String? = nil,
+         onConversationUnavailable: (() -> Void)? = nil) {
         mentionAvatars = avatars
-        _model = State(initialValue: BotConversation(server: server, connection: connection, profile: profile, roster: roster, historyCache: .shared))
+        self.onConversationUnavailable = onConversationUnavailable
+        _model = State(initialValue: BotConversation(server: server, connection: connection, profile: profile,
+                                                     roster: roster, conversation: conversation, historyCache: .shared))
     }
 
-    init(model: BotConversation) {
+    init(model: BotConversation, onConversationUnavailable: (() -> Void)? = nil) {
         mentionAvatars = [:]
+        self.onConversationUnavailable = onConversationUnavailable
         _model = State(initialValue: model)
     }
 
@@ -167,6 +176,11 @@ import SwiftUI
             else { stopAction = nil; model.suspend() }
         }
         .onDisappear { stopAction = nil; model.suspend() }
+        .onChange(of: model.linkedRootIsStale) {
+            // The link named a conversation this bot has replaced: hand it back to
+            // the inbox, which reports it (#554).
+            if model.linkedRootIsStale { onConversationUnavailable?() }
+        }
         .confirmationDialog("Stop this bot’s current work?", isPresented: Binding(
             get: { stopAction != nil }, set: { if !$0 { stopAction = nil } }
         ), titleVisibility: .visible) {

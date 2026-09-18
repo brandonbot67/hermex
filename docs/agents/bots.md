@@ -411,6 +411,30 @@ is adaptive: `Color.botBody` paints it white in dark appearance and black in
 light, with eyes inverted to match, so the face and the swatch never vanish
 into the background.
 
+## Opening a bot from outside the app
+
+One URL route lands on a bot conversation: `hermes-agent://bot?server=…&
+connection=…&profile=…[&conversation=…]` (`BotDestination` and the parser live in
+`Features/Bots/BotDeepLink.swift`, the host in the widget-shared
+`HermesDeepLink`). It routes only by identity the server owns — configured server
+URL, Bot connection UUID, Profile name — so equal display names, or equal Profile
+names on two connections, can never resolve to each other.
+
+`BotDeepLinkRouter` decides the outcome before anything navigates, from the Bot
+Mode gate, the server registry, the destination server's Keychain connection and
+the auth state: Bot Mode off, an unconfigured server, or a removed or replaced
+connection drops the link and the app just opens; signed out holds it until the
+next sign-in; another server activates first, and the rebuilt tree routes it. The
+roster is never waited on to route. `BotsInboxView` resolves the held destination
+once `open()` has settled, and a Profile the server no longer has simply leaves
+the user on that inbox. Opening follows the ordinary canonical resume rules: a
+link never sends a prompt and never auto-continues on its own.
+
+`conversation` is the bot's durable canonical root when the sender knows it. It is
+seeded as `BotConversation.root`, so the existing changed-root rejection refuses to
+open a replacement conversation under the link's identity; the chat reports that
+back and the inbox says the conversation is no longer available.
+
 ## Bot lifecycle
 
 The inbox's `+` button and a row's context menu create, duplicate and delete
