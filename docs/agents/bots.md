@@ -50,6 +50,26 @@ Markdown rendering without token reveal animations. The deferred streaming
 renderer can leave a growing Bot response's trailing viewport blank; an XCTest
 renders evolving snapshots and checks the actual visible output.
 
+Settled messages reuse the Sessions transcript's two interaction seams.
+`chatMessageContextMenu` supplies the long-press menu from a plain
+`[ChatMessageActionItem]`; `BotMessageActions` builds that list, and for a Bot
+it is Copy alone over the Markdown source, because the host owns the history
+and edit, regenerate and branch have nothing to act on. In a Bot chat, `ResponseTextSelection`
+supplies in-place selection, and stays off the live reply so a growing snapshot
+never rebuilds the selection document. "Ask Hermex" on a selection appends a
+`ComposerQuote` to `BotConversation.quotes`, durable through `ChatDraftStore`
+beside the typed draft; quotes become Markdown blockquotes only in
+`PromptAction.outboundText`, so a failed send restores exactly what the composer
+held.
+
+That selection document reports no height until its row is laid out, so a
+lazily built row measures short and the scroll lands on blank space. The Bot
+transcript is therefore an eager `VStack`, as the Sessions transcript already
+is. Group room transcripts stay lazy — they page in history — and so get the
+menu but not in-place selection; their `scrollTo(sequence, anchor: .center)`,
+how a search hit reopens its message, breaks under the same mis-measurement.
+Selection in rooms waits on issue #564 with the rest of the quote work.
+
 Activity comes from two sources that never overlap. The full snapshot's
 `messages` rows already carry settled tool rows (`role: tool` with `name`,
 `context`, `args`) and assistant `reasoning`; `BotTranscriptProjection` turns
