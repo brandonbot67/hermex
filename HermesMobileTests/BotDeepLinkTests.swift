@@ -135,6 +135,36 @@ import XCTest
                                                connection: connection, profiles: profiles))
     }
 
+    func testUnknownProfileDismissesThePresentedChatAndLinkedRoot() {
+        let profile = BotProfile(.object(["name": .string("inbox-triage")]))!
+        let connection = BotConnection(id: connectionID, name: "Fixture", address: serverA,
+                                       username: "fixture", password: "fixture")
+        let room = BotRoomKey(server: serverA, connectionID: connectionID, roomID: "room")
+        // Both bot and group chats must return to the inbox, even when the stale
+        // link also names a conversation that must not affect the next manual tap.
+        for initial in [BotInboxSelection(profile: profile, conversation: "old-root"),
+                        BotInboxSelection(room: room)] {
+            var selection = initial
+            selection.open(destination(profile: "retired", conversation: "stale-root"),
+                           connection: connection, profiles: [profile])
+            XCTAssertNil(selection.profile)
+            XCTAssertNil(selection.room)
+            XCTAssertNil(selection.conversation)
+        }
+    }
+
+    func testValidProfileLinkReplacesRoomAndPreservesExpectedConversation() {
+        let profile = BotProfile(.object(["name": .string("inbox-triage")]))!
+        let connection = BotConnection(id: connectionID, name: "Fixture", address: serverA,
+                                       username: "fixture", password: "fixture")
+        var selection = BotInboxSelection(
+            room: BotRoomKey(server: serverA, connectionID: connectionID, roomID: "room"))
+        selection.open(destination(conversation: "expected-root"), connection: connection, profiles: [profile])
+        XCTAssertEqual(selection.profile, profile)
+        XCTAssertNil(selection.room)
+        XCTAssertEqual(selection.conversation, "expected-root")
+    }
+
     func testAHeldLinkSurvivesAConnectingOrRetryingInboxButNotAMissingConnection() {
         // Only a live roster answers a link…
         XCTAssertTrue(BotDeepLinkRouter.inboxCanAnswer(link: .live, hasConnection: true, hasSettled: true))

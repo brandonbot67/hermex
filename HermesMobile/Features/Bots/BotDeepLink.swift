@@ -145,3 +145,19 @@ enum BotDeepLinkOutcome: Equatable {
         return profiles.first { $0.id == destination.profile }
     }
 }
+
+/// The inbox's presented chat and optional linked root. Resolving a link replaces
+/// the whole selection, including when its Profile is no longer on the roster.
+struct BotInboxSelection {
+    var profile: BotProfile?
+    var room: BotRoomKey?
+    var conversation: String?
+
+    @MainActor mutating func open(
+        _ destination: BotDestination, connection: BotConnection?, profiles: [BotProfile]
+    ) {
+        profile = BotDeepLinkRouter.profile(for: destination, connection: connection, profiles: profiles)
+        room = nil
+        conversation = profile == nil ? nil : destination.conversation
+    }
+}

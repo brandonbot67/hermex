@@ -17,14 +17,7 @@ import SwiftUI
     @State private var roomCreator: BotRoomCreator?
     @State private var createdRoom: BotRoomKey?
     @State private var deleting: BotProfile?
-    /// The bot whose chat is open. One destination serves the hero tiles and the
-    /// rows, so a row shows no disclosure accessory and tiles sharing a row keep
-    /// separate tap targets.
-    @State private var openProfile: BotProfile?
-    @State private var openRoom: BotRoomKey?
-    /// The durable conversation a deep link named, seeded as the open chat's expected
-    /// canonical root so a stale link cannot silently open its replacement.
-    @State private var openConversation: String?
+    @State private var selection = BotInboxSelection()
     @State private var searchedRoom: BotRoomKey?
     @State private var searchedSequence: Int?
     @State private var roomSequence: Int?
@@ -74,7 +67,7 @@ import SwiftUI
                     // four or more wrap instead of being clipped away.
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: min(rows.pinned.count, 3)), spacing: 24) {
                         ForEach(rows.pinned) { profile in
-                            Button { openProfile = profile } label: {
+                            Button { selection.profile = profile } label: {
                                 BotHeroTile(profile: profile, avatar: inbox.avatars[profile.id], unread: inbox.isUnread(profile))
                             }
                             .buttonStyle(.plain)
@@ -90,7 +83,7 @@ import SwiftUI
                         row(profile, dimmed: profile.hidden)
                     case .room(let room):
                         if let key = inbox.roomKey(room) {
-                            Button { roomSequence = nil; openRoom = key } label: {
+                            Button { roomSequence = nil; selection.room = key } label: {
                                 BotRoomInboxRow(room: room, roster: inbox.profiles, avatars: inbox.avatars)
                             }
                             .id(key).buttonStyle(.plain).listRowSeparator(.hidden)
@@ -147,7 +140,7 @@ import SwiftUI
             }
         }
         .sheet(isPresented: Binding(get: { roomCreator != nil }, set: { if !$0 { roomCreator = nil } }), onDismiss: {
-            if let key = createdRoom, key.connectionID == inbox.connection?.id { roomSequence = nil; openRoom = key }
+            if let key = createdRoom, key.connectionID == inbox.connection?.id { roomSequence = nil; selection.room = key }
             createdRoom = nil
         }) {
             if let creator = roomCreator {
@@ -185,7 +178,7 @@ import SwiftUI
             showingSearch = false
             searchedProfile = nil
             searchedRoom = nil; searchedSequence = nil; roomSequence = nil
-            openRoom = nil; openConversation = nil
+            selection.room = nil; selection.conversation = nil
             editSelection = nil
             creation = nil
             roomCreator?.suspend(); roomCreator = nil; createdRoom = nil
@@ -194,17 +187,17 @@ import SwiftUI
         .sheet(isPresented: $showingSetup, onDismiss: { revision = UUID() }) {
             NavigationStack { BotConnectionView(server: server) }
         }
-        .navigationDestination(item: $openProfile) { profile in
+        .navigationDestination(item: $selection.profile) { profile in
             if let connection = inbox.connection { chat(profile, connection) }
         }
-        .navigationDestination(item: $openRoom) { key in
+        .navigationDestination(item: $selection.room) { key in
             if let connection = inbox.connection, connection.id == key.connectionID,
                let room = inbox.rooms.first(where: { $0.id == key.roomID }) {
                 BotRoomView(reader: BotRoomReader(key: key, connection: connection, room: room, initialSequence: roomSequence, onExpired: {
-                    inbox.expireRoom(key); openRoom = nil
+                    inbox.expireRoom(key); selection.room = nil
                     toast = String(localized: "This room’s history is no longer available.")
                 }, onChanged: { inbox.updateRoom($0, connectionID: key.connectionID) }, onDisbanded: {
-                    inbox.removeRoom(key); openRoom = nil
+                    inbox.removeRoom(key); selection.room = nil
                 }), roster: inbox.profiles, avatars: inbox.avatars)
                 .id(key)
             }
@@ -217,7 +210,7 @@ import SwiftUI
         .task(id: revision) { await inbox.open(); hasSettled = true; openPendingDestination() }
         .onChange(of: inbox.link) { openPendingDestination() }
         .onChange(of: pendingDestination) { openPendingDestination() }
-        .onChange(of: openProfile) { if openProfile == nil { openConversation = nil } }
+        .onChange(of: selection.profile) { if selection.profile == nil { selection.conversation = nil } }
         .refreshable { await inbox.open() }
         .onChange(of: scenePhase) {
             if scenePhase == .active { revision = UUID() }
@@ -233,16 +226,14 @@ import SwiftUI
     /// guessing (#554).
     private func openPendingDestination() {
         guard let destination = pendingDestination, destination.server == server else { return }
+        // A pushed chat closes the inbox socket. Return to the inbox before waiting
+        // for its roster, so its appearance task can reconnect and resolve the link.
+        selection = BotInboxSelection()
         guard BotDeepLinkRouter.inboxCanAnswer(
             link: inbox.link, hasConnection: inbox.connection != nil, hasSettled: hasSettled
         ) else { return }
         pendingDestination = nil
-        guard let profile = BotDeepLinkRouter.profile(
-            for: destination, connection: inbox.connection, profiles: inbox.profiles
-        ) else { return }
-        openRoom = nil
-        openConversation = destination.conversation
-        openProfile = profile
+        selection.open(destination, connection: inbox.connection, profiles: inbox.profiles)
     }
 
     /// Resolve the selection again after the sheet closes so a refreshed roster
@@ -250,13 +241,13 @@ import SwiftUI
     private func openSearchSelection() {
         defer { searchedProfile = nil; searchedRoom = nil; searchedSequence = nil }
         if let key = searchedRoom, key.connectionID == inbox.connection?.id,
-           inbox.rooms.contains(where: { $0.id == key.roomID }) { roomSequence = searchedSequence; openRoom = key; return }
-        guard let selection = searchedProfile, inbox.connection?.id == selection.connectionID else { return }
-        openProfile = inbox.profiles.first { $0.id == selection.profileID }
+           inbox.rooms.contains(where: { $0.id == key.roomID }) { roomSequence = searchedSequence; selection.room = key; return }
+        guard let searched = searchedProfile, inbox.connection?.id == searched.connectionID else { return }
+        selection.profile = inbox.profiles.first { $0.id == searched.profileID }
     }
 
     private func row(_ profile: BotProfile, dimmed: Bool) -> some View {
-        Button { openProfile = profile } label: {
+        Button { selection.profile = profile } label: {
             BotInboxRow(profile: profile, avatar: inbox.avatars[profile.id], unread: inbox.isUnread(profile))
         }
         .buttonStyle(.plain)
@@ -268,15 +259,15 @@ import SwiftUI
 
     private func chat(_ profile: BotProfile, _ connection: BotConnection) -> some View {
         BotChatView(server: server, connection: connection, profile: profile, roster: inbox.profiles,
-                    avatars: inbox.avatars, conversation: openConversation, onConversationUnavailable: {
-                        openProfile = nil
+                    avatars: inbox.avatars, conversation: selection.conversation, onConversationUnavailable: {
+                        selection.profile = nil
                         toast = String(localized: "That conversation is no longer available.")
                     })
             // A composite rather than a concatenation: a Profile name and a
             // conversation root are both arbitrary server strings, so joining them
             // could let two destinations share one identity and keep the wrong
             // conversation on screen.
-            .id([profile.id, connection.id.uuidString, openConversation ?? ""])
+            .id([profile.id, connection.id.uuidString, selection.conversation ?? ""])
             .onAppear { inbox.markSeen(profile) }
             .onDisappear { inbox.noteReturn(from: profile) }
     }
