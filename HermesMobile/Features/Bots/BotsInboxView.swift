@@ -4,6 +4,9 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     let server: URL
     let showSessions: () -> Void
+    /// The bot a deep link named, resolved here because this is where the live roster
+    /// is. Cleared once this inbox has settled, whether or not it matched (#554).
+    @Binding private var pendingDestination: BotDestination?
     @State private var inbox: BotInbox
     @State private var showingSearch = false
     @State private var searchedProfile: (connectionID: UUID, profileID: String)?
@@ -19,14 +22,24 @@ import SwiftUI
     /// separate tap targets.
     @State private var openProfile: BotProfile?
     @State private var openRoom: BotRoomKey?
+    /// The durable conversation a deep link named, seeded as the open chat's expected
+    /// canonical root so a stale link cannot silently open its replacement.
+    @State private var openConversation: String?
     @State private var searchedRoom: BotRoomKey?
     @State private var searchedSequence: Int?
     @State private var roomSequence: Int?
-    @State private var expiredRoomToast: String?
+    /// One-line report for something that is no longer there: a disbanded room, or a
+    /// conversation a deep link named that the bot has since replaced.
+    @State private var toast: String?
 
-    init(server: URL, showSessions: @escaping () -> Void) {
+    init(
+        server: URL,
+        pendingDestination: Binding<BotDestination?> = .constant(nil),
+        showSessions: @escaping () -> Void
+    ) {
         self.server = server
         self.showSessions = showSessions
+        _pendingDestination = pendingDestination
         _inbox = State(initialValue: BotInbox(server: server))
     }
 
@@ -95,16 +108,16 @@ import SwiftUI
             }
         }
         .overlay(alignment: .bottom) {
-            if let expiredRoomToast {
-                Text(expiredRoomToast).font(.callout).padding()
+            if let toast {
+                Text(toast).font(.callout).padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .padding().accessibilityAddTraits(.updatesFrequently)
             }
         }
-        .task(id: expiredRoomToast) {
-            guard expiredRoomToast != nil else { return }
+        .task(id: toast) {
+            guard toast != nil else { return }
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            expiredRoomToast = nil
+            toast = nil
         }
         .listStyle(.plain)
         .navigationTitle("Bots")
@@ -169,7 +182,7 @@ import SwiftUI
             showingSearch = false
             searchedProfile = nil
             searchedRoom = nil; searchedSequence = nil; roomSequence = nil
-            openRoom = nil
+            openRoom = nil; openConversation = nil
             editSelection = nil
             creation = nil
             roomCreator?.suspend(); roomCreator = nil; createdRoom = nil
@@ -186,7 +199,7 @@ import SwiftUI
                let room = inbox.rooms.first(where: { $0.id == key.roomID }) {
                 BotRoomView(reader: BotRoomReader(key: key, connection: connection, room: room, initialSequence: roomSequence, onExpired: {
                     inbox.expireRoom(key); openRoom = nil
-                    expiredRoomToast = String(localized: "This room’s history is no longer available.")
+                    toast = String(localized: "This room’s history is no longer available.")
                 }, onChanged: { inbox.updateRoom($0, connectionID: key.connectionID) }, onDisbanded: {
                     inbox.removeRoom(key); openRoom = nil
                 }), roster: inbox.profiles, avatars: inbox.avatars)
@@ -198,13 +211,30 @@ import SwiftUI
         }
         // The subscription lives while the inbox is on screen and the app is active;
         // returning, refreshing and reconnecting all go through the same open().
-        .task(id: revision) { await inbox.open() }
+        .task(id: revision) { await inbox.open(); openPendingDestination() }
+        .onChange(of: pendingDestination) { if inbox.link == .live { openPendingDestination() } }
+        .onChange(of: openProfile) { if openProfile == nil { openConversation = nil } }
         .refreshable { await inbox.open() }
         .onChange(of: scenePhase) {
             if scenePhase == .active { revision = UUID() }
             else { inbox.close() }
         }
         .onDisappear { inbox.close() }
+    }
+
+    /// Opens the bot a deep link named, once this inbox has a roster to resolve it
+    /// against. Called after `open()` settles, so a link is never dropped while the
+    /// socket is still connecting. A replaced connection or a Profile the server no
+    /// longer has leaves the user on the inbox rather than guessing (#554).
+    private func openPendingDestination() {
+        guard let destination = pendingDestination, destination.server == server else { return }
+        pendingDestination = nil
+        guard let profile = BotDeepLinkRouter.profile(
+            for: destination, connection: inbox.connection, profiles: inbox.profiles
+        ) else { return }
+        openRoom = nil
+        openConversation = destination.conversation
+        openProfile = profile
     }
 
     /// Resolve the selection again after the sheet closes so a refreshed roster
@@ -229,7 +259,11 @@ import SwiftUI
     }
 
     private func chat(_ profile: BotProfile, _ connection: BotConnection) -> some View {
-        BotChatView(server: server, connection: connection, profile: profile, roster: inbox.profiles, avatars: inbox.avatars)
+        BotChatView(server: server, connection: connection, profile: profile, roster: inbox.profiles,
+                    avatars: inbox.avatars, conversation: openConversation, onConversationUnavailable: {
+                        openProfile = nil
+                        toast = String(localized: "That conversation is no longer available.")
+                    })
             .id(profile.id + connection.id.uuidString)
             .onAppear { inbox.markSeen(profile) }
             .onDisappear { inbox.noteReturn(from: profile) }

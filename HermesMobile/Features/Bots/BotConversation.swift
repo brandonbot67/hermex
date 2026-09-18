@@ -40,6 +40,13 @@ import Observation
     private(set) var uncertainSend = false
     private(set) var uncertainStop = false
     private(set) var root: String?
+    /// The canonical root a deep link named, seeded into `root` so the changed-root
+    /// rejection below refuses to open the bot's replacement conversation under the
+    /// link's identity (#554). Nil for an ordinary open from the inbox.
+    private let linkedRoot: String?
+    /// Set when that seeded root is not the bot's canonical chat any more, so the
+    /// inbox can take the user back with a one-line report.
+    private(set) var linkedRootIsStale = false
     private(set) var runtime: String?
     private(set) var sequence = 0
     private(set) var epoch: String?
@@ -85,10 +92,12 @@ import Observation
     private let drafts: ChatDraftStore
 
     init(server: URL, connection: BotConnection, profile: BotProfile, roster: [BotProfile] = [],
+         conversation: String? = nil,
          historyCache: BotHistoryCache? = nil, wire: (any BotTransport)? = nil, drafts: ChatDraftStore? = nil,
          attachmentCopies: any ChatDraftAttachmentStoring = ChatDraftAttachmentStore.shared,
          reconnectDelay: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.server = server; self.connection = connection; self.profile = profile
+        self.linkedRoot = conversation; self.root = conversation
         self.mentions = BotMentions(roster: roster, excluding: profile.id)
         self.reconnectDelay = reconnectDelay
         self.wire = wire ?? BotClient(connection: connection)
@@ -227,7 +236,12 @@ import Observation
             guard let foundRoot = rows[0]["id"].text, !foundRoot.isEmpty,
                   let foundTip = rows[0]["resolved_id"].text, !foundTip.isEmpty else { throw BotFailure.unsupported }
             // Resume can auto-continue. Reject a changed root before making that call.
-            if let root, root != foundRoot { throw BotFailure.wrongIdentity }
+            if let root, root != foundRoot {
+                // The rejected root is the one a deep link named: report it so the
+                // inbox can say so, rather than sitting on an error the user cannot act on.
+                if root == linkedRoot { linkedRootIsStale = true }
+                throw BotFailure.wrongIdentity
+            }
             root = foundRoot; tip = foundTip
             let first = try await request("session.resume", resumeParams(), owner: owner)
             guard first["session_key"].text == foundTip, let foundRuntime = first["session_id"].text,
