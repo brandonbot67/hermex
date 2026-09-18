@@ -499,6 +499,64 @@ import XCTest
         XCTAssertTrue(wire.calls.allSatisfy { $0.0 != "prompt.submit" && $0.0 != "session.interrupt" })
     }
 
+    /// Typing `/` in a Bot chat opens the panel with this connection's skills.
+    /// Commands stay out: nothing on the phone can run one, so a `/model` row
+    /// would be text the agent only reads literally.
+    func testSlashPanelOffersConnectionSkillsAndNeverCommands() async throws {
+        let wire = BotFixtureWire()
+        wire.catalog = .object([
+            "skills": .object([
+                "/write-tests": .object(["origin": .string("bundled")]),
+                "/triage-inbox": .object(["origin": .string("user")])
+            ]),
+            "pairs": .array([
+                .array([.string("/model"), .string("Switch the chat model")]),
+                .array([.string("/write-tests"), .string("Add focused XCTests")]),
+                .array([.string("/triage-inbox"), .string("Sort the morning mail")])
+            ]),
+            "canon": .object(["/model": .string("/model")]), "commands": .object([:])
+        ])
+        let model = make(wire)
+        await model.recover()
+        await model.loadSlashCatalog()
+        XCTAssertEqual(model.slashSkills.map(\.name), ["triage-inbox", "write-tests"])
+        let window = try show(BotChatComposerView(model: model, onStop: {}, onReconnect: {}, onShowRequest: {}))
+        defer { model.suspend(); close(window) }
+        await renderFrames()
+        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
+        XCTAssertTrue(editor.becomeFirstResponder())
+        await renderFrames()
+
+        editor.insertText("/")
+        let browsing = try await screenshot(window, name: "551-bot-slash-panel", awaiting: ["triage-inbox", "write-tests"])
+        XCTAssertTrue(browsing.contains("triage-inbox"), browsing)
+        XCTAssertTrue(browsing.contains("write-tests"), browsing)
+        XCTAssertTrue(browsing.contains("Sort the morning mail"), browsing)
+        XCTAssertFalse(browsing.contains("Switch the chat model"), "A command row would insert text nothing runs")
+
+        window.overrideUserInterfaceStyle = .dark
+        await renderFrames(4)
+        capture(window, name: "551-bot-slash-panel-dark")
+        window.overrideUserInterfaceStyle = .light
+
+        editor.insertText("tri")
+        let filtered = try await screenshot(window, name: "551-bot-slash-panel-filtered", awaiting: ["triage-inbox"])
+        XCTAssertTrue(filtered.contains("triage-inbox"), filtered)
+        XCTAssertFalse(filtered.contains("write-tests"), filtered)
+
+        // Past the name the user is writing the skill's argument, so the panel
+        // closes and the accepted name becomes an atomic chip.
+        editor.insertText("age-inbox yesterday's mail")
+        await renderFrames(4)
+        XCTAssertEqual(model.draft, "/triage-inbox yesterday's mail")
+        let sending = try screenshot(window, name: "551-bot-slash-chip")
+        XCTAssertFalse(sending.contains("Sort the morning mail"), sending)
+        XCTAssertEqual(
+            ComposerChipTokenizer.tokens(in: model.draft, catalog: ComposerChipCatalog(skills: model.slashSkills))
+                .map { (model.draft as NSString).substring(with: $0.range) },
+            ["/triage-inbox"])
+    }
+
     func testPendingRequestOutranksUncertainStopInStatus() async throws {
         // A Stop whose acknowledgement was lost stays uncertain; if the next snapshot
         // still carries a pending approval, the Desktop instruction must stay visible.
