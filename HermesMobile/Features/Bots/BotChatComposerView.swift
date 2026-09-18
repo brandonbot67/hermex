@@ -34,7 +34,7 @@ struct BotChatComposerView: View {
     private var showsToolbar: Bool { isExpanded || mode != .send }
     private var showsStop: Bool { model.mayStop || model.turn == .stopping }
     private var canSend: Bool {
-        model.maySubmit(mode) && model.hasSendableInput
+        model.maySubmit(mode) && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.items.isEmpty)
     }
     private var appearance: ChatComposerActionAppearance {
         ChatComposerActionAppearance(
@@ -149,12 +149,6 @@ struct BotChatComposerView: View {
             if model.mayEditDraft { isFocused = true }
         }
         .onDisappear { shouldRestoreFocusAfterPicker = false }
-        // Ask Hermex lands the passage here, so the keyboard should already be
-        // up for whatever the user wants to ask about it.
-        .onChange(of: model.quotes.count) { previous, current in
-            guard current > previous, model.mayEditDraft else { return }
-            isFocused = true
-        }
         .onChange(of: model.attachments.items.isEmpty) { _, empty in
             if !empty, mode == .steer || mode == .redirect { mode = model.mayGuide ? .queue : .send }
         }
@@ -202,15 +196,13 @@ struct BotChatComposerView: View {
                     isDisabled: !model.mayEditDraft, isCollapsed: !isExpanded,
                     isKeyboardSendEnabled: canSend, verticalPadding: 12,
                     chipSkills: [], chipFilePaths: [],
-                    chipBots: model.mentions.chipReferences(avatars: mentionAvatars), quotes: model.quotes,
+                    chipBots: model.mentions.chipReferences(avatars: mentionAvatars), quotes: [],
                     onKeyboardSend: send,
                     onPasteFileProviders: { BotAttachmentPaste.providers($0, model: model) },
                     onPasteFileURLs: { BotAttachmentPaste.files($0, model: model) },
                     onPasteImageProviders: { BotAttachmentPaste.providers($0, model: model) },
                     onPasteImages: { BotAttachmentPaste.images($0, model: model) },
-                    // Tapping a chip opens its full passage in issue #564; here it
-                    // is inert, and the swipe-to-remove is the way back out.
-                    onTapChip: { _ in }, onTapQuote: { _ in }, onRemoveQuote: { model.removeQuote($0) },
+                    onTapChip: { _ in }, onTapQuote: { _ in }, onRemoveQuote: { _ in },
                     placeholder: String(localized: "Ask anything..."), acceptsAttachments: model.mayEditDraft
                 )
                 if !isExpanded {

@@ -35,12 +35,7 @@ import SwiftUI
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    // Eager, like the Sessions transcript: a settled reply is
-                    // wrapped in a selection document, and that document reports
-                    // no height until its row is laid out. Lazily built rows then
-                    // measure short and the trailing anchor lands on blank space
-                    // (issue #553).
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(model.messages) { message in
                             settledActivity(anchoredTo: message.id)
                             BotArtifactMessageView(message: message, model: model)
@@ -57,7 +52,7 @@ import SwiftUI
                             )
                         }
                         if let reply = model.liveMessages.first(where: { $0.role == "assistant" }) {
-                            BotArtifactMessageView(message: reply, model: model, isLive: true)
+                            BotArtifactMessageView(message: reply, model: model)
                         }
                         if let plan = model.plan {
                             BotPlanRowView(plan: plan).id("bot-plan")

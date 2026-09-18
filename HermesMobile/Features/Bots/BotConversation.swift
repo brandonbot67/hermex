@@ -15,14 +15,7 @@ import Observation
     struct PromptAction: Equatable {
         let generation: Int; let revision: Int; let runtime: String
         let mode: BotPromptMode; let text: String
-        var quotes: [ComposerQuote] = []
         var attachmentIDs: [UUID] = []
-
-        /// `text` stays the typed draft so a failed send restores exactly what
-        /// the composer held; quotes only become Markdown on the way out.
-        var outboundText: String {
-            ComposerQuoteMessageFormatter.message(text: text, quotes: quotes)
-        }
     }
 
     private(set) var isUploadingAttachments = false
@@ -44,9 +37,6 @@ import Observation
     let chatControls = BotChatControls()
     let attachments: BotAttachmentDraft
     private(set) var draft = ""
-    /// Passages the user sent here with Ask Hermex. Separate from `draft` so a
-    /// pasted paragraph never turns into a chip and each one is removable.
-    private(set) var quotes: [ComposerQuote] = []
     private(set) var uncertainSend = false
     private(set) var uncertainStop = false
     private(set) var root: String?
@@ -143,14 +133,9 @@ import Observation
     }
 
     func preparePrompt(_ mode: BotPromptMode) -> PromptAction? {
-        guard maySubmit(mode), let runtime, hasSendableInput else { return nil }
-        return PromptAction(generation: generation, revision: turnRevision, runtime: runtime, mode: mode,
-                            text: draft, quotes: quotes, attachmentIDs: attachments.items.map(\.id))
-    }
-
-    /// A quote alone is a message: the passage is what the user wants asked about.
-    var hasSendableInput: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !quotes.isEmpty || !attachments.items.isEmpty
+        guard maySubmit(mode), let runtime,
+              (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.items.isEmpty) else { return nil }
+        return PromptAction(generation: generation, revision: turnRevision, runtime: runtime, mode: mode, text: draft, attachmentIDs: attachments.items.map(\.id))
     }
 
     var mayImportAttachments: Bool { mayEditDraft && connectionState == .connected }
@@ -198,21 +183,6 @@ import Observation
         drafts.setDraft(text, for: draftKey)
     }
 
-    /// Ask Hermex on a passage selected in the transcript. Durable straight
-    /// away, so a passage survives leaving the screen the way typed text does.
-    func quotePassage(_ passage: String) {
-        let trimmed = passage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard mayEditDraft, !trimmed.isEmpty else { return }
-        quotes.append(ComposerQuote(text: trimmed))
-        drafts.setQuotes(quotes, for: draftKey)
-    }
-
-    func removeQuote(_ id: UUID) {
-        guard mayEditDraft, quotes.contains(where: { $0.id == id }) else { return }
-        quotes.removeAll { $0.id == id }
-        drafts.setQuotes(quotes, for: draftKey)
-    }
-
     func recover() async {
         suspend()
         isActive = true
@@ -241,7 +211,6 @@ import Observation
                 let saved = await drafts.draft(for: draftKey)
                 try check(owner)
                 draft = saved?.text ?? ""
-                quotes = saved?.quotes ?? []
                 uncertainSend = saved?.botSubmissionUncertain ?? false
                 await attachments.restore(saved?.attachments ?? [])
                 try check(owner)
@@ -502,7 +471,7 @@ import Observation
         var promptDispatched = false
         do {
             let text: String
-            if action.attachmentIDs.isEmpty { text = action.outboundText }
+            if action.attachmentIDs.isEmpty { text = action.text }
             else {
                 isUploadingAttachments = true
                 let task = Task { try await self.attachmentPrompt(action, owner: owner) }
@@ -536,12 +505,11 @@ import Observation
             }
             guard let receipt = outcome.receipt else { throw BotFailure.unsupported }
             drafts.setDraft("", for: draftKey)
-            drafts.setQuotes([], for: draftKey)
             drafts.setAttachments([], for: draftKey)
             drafts.setBotSubmissionUncertain(false, for: draftKey)
             try await drafts.flush()
             try check(owner)
-            draft = ""; quotes = []; uncertainSend = false
+            draft = ""; uncertainSend = false
             await attachments.consumed()
             try check(owner)
             localOperation = false
@@ -562,7 +530,6 @@ import Observation
                 // A failed durable clear must leave the original text held too.
                 drafts.setAttachments(attachments.items.map(ChatDraftAttachment.init(pending:)), for: draftKey)
                 drafts.setDraft(action.text, for: draftKey)
-                drafts.setQuotes(action.quotes, for: draftKey)
                 drafts.setBotSubmissionUncertain(true, for: draftKey)
                 try? await drafts.flush()
                 guard owner == generation, !Task.isCancelled else { return }
@@ -594,7 +561,7 @@ import Observation
     func cancelAttachmentUpload() { attachmentUploadTask?.cancel() }
 
     private func attachmentPrompt(_ action: PromptAction, owner: Int) async throws -> String {
-        var text = action.outboundText
+        var text = action.text
         guard !action.attachmentIDs.isEmpty else { return text }
         guard attachments.items.count <= 8,
               attachments.items.reduce(0, { $0 + ($1.size ?? BotAttachmentDraft.maximumFileBytes) }) <= BotAttachmentDraft.maximumTotalBytes
