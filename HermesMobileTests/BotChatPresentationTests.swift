@@ -554,6 +554,40 @@ import XCTest
             ["/triage-inbox"])
     }
 
+    func testScrolledSlashSkillsStayInsideTheCard() async throws {
+        let suggestions = (0..<30).map {
+            SkillSlashSuggestion(name: "skill-\($0)", category: nil, description: nil)
+        }
+        let window = try show(VStack {
+            Spacer()
+            AdaptiveGlassContainer {
+                BotSlashAutocompleteView(suggestions: suggestions, onSelect: { _ in })
+            }
+            .padding(.horizontal, 16)
+            Spacer()
+        })
+        defer { close(window) }
+        await renderFrames()
+        let scroll = try XCTUnwrap(descendants(window).compactMap { $0 as? UIScrollView }.first)
+        drag(scroll, to: 300)
+        await renderFrames(8)
+
+        let card = scroll.convert(scroll.bounds, to: window)
+        let image = capture(window, name: "551-scrolled-skills-clipped")
+        let request = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        let rows = (request.results ?? []).filter {
+            $0.topCandidates(1).first?.string.localizedCaseInsensitiveContains("skill") == true
+        }
+        XCTAssertFalse(rows.isEmpty, "The scrolled panel must still show skill rows")
+        for row in rows {
+            let top = (1 - row.boundingBox.maxY) * window.bounds.height
+            let bottom = (1 - row.boundingBox.minY) * window.bounds.height
+            XCTAssertGreaterThanOrEqual(top, card.minY - 1, "Skill text escaped above the card")
+            XCTAssertLessThanOrEqual(bottom, card.maxY + 1, "Skill text escaped below the card")
+        }
+    }
+
     func testPendingRequestOutranksUncertainStopInStatus() async throws {
         // A Stop whose acknowledgement was lost stays uncertain; if the next snapshot
         // still carries a pending approval, the Desktop instruction must stay visible.

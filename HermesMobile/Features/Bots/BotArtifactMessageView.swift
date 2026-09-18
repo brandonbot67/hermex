@@ -7,26 +7,14 @@ struct BotArtifactMessageView: View {
     let model: BotConversation
     @State private var preview: TranscriptMediaPreviewItem?
     @State private var previewContext: BotArtifactContext?
+    @AppStorage(AppHaptics.isEnabledKey) private var isHapticsEnabled = true
 
     var body: some View {
         Group {
             if message.role == "user" {
-                MessageBubbleView(message: message, textOnly: true)
+                MessageBubbleView(message: message, contextMenuActions: actions, textOnly: true)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(TranscriptMediaParser.segments(in: message.content ?? "", includesLocalFileLinks: true).enumerated()), id: \.offset) { _, segment in
-                        switch segment {
-                        case .text(let text):
-                            MarkdownRenderer(content: text)
-                        case .media(let reference):
-                            BotArtifactRow(reference: reference, model: model) {
-                                previewContext = model.artifactContext
-                                preview = TranscriptMediaPreviewItem(reference: reference)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                assistantContent
             }
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -44,6 +32,30 @@ struct BotArtifactMessageView: View {
             }
         }
         .onChange(of: model.artifactContext) { _, _ in preview = nil; previewContext = nil }
+    }
+
+    /// Attached to the message content, not the row, so the gutter beside a
+    /// user bubble stays inert.
+    private var assistantContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(TranscriptMediaParser.segments(in: message.content ?? "", includesLocalFileLinks: true).enumerated()), id: \.offset) { _, segment in
+                switch segment {
+                case .text(let text):
+                    MarkdownRenderer(content: text)
+                case .media(let reference):
+                    BotArtifactRow(reference: reference, model: model) {
+                        previewContext = model.artifactContext
+                        preview = TranscriptMediaPreviewItem(reference: reference)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .chatMessageContextMenu(actions)
+    }
+
+    private var actions: [ChatMessageActionItem] {
+        BotMessageActions.items(copyText: message.content, isHapticsEnabled: isHapticsEnabled)
     }
 }
 

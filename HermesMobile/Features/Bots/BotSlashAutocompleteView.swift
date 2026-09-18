@@ -41,11 +41,12 @@ struct BotSlashAutocompleteView: View {
                 }
             }
         }
+        .frame(height: min(280, CGFloat(suggestions.count) * rowHeight))
+        // Clip the scrolling content before Liquid Glass composites the surface.
+        .clipShape(RoundedRectangle(cornerRadius: ChatComposerMetrics.cardCornerRadius, style: .continuous))
         .adaptiveGlass(.regular, fallbackMaterial: .ultraThinMaterial,
                        in: RoundedRectangle(cornerRadius: ChatComposerMetrics.cardCornerRadius, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: ChatComposerMetrics.cardCornerRadius, style: .continuous))
         .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
-        .frame(height: min(280, CGFloat(suggestions.count) * rowHeight))
         .accessibilityIdentifier("bot-slash-autocomplete")
     }
 }

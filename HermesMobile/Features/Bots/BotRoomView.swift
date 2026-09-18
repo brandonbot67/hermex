@@ -139,17 +139,21 @@ private struct BotRoomEventView: View {
     let room: BotGroupRoom
     let roster: [BotProfile]
     let avatars: [String: UIImage]
+    @AppStorage(AppHaptics.isEnabledKey) private var isHapticsEnabled = true
+
     var body: some View {
         if event.kind == "message.user" {
             MessageBubbleView(message: ChatMessage(role: "user", content: event.payload["text"].text,
-                timestamp: event.timestamp, messageId: String(event.seq)), textOnly: true)
+                timestamp: event.timestamp, messageId: String(event.seq)),
+                contextMenuActions: actions, textOnly: true)
         } else if event.kind == "message.member" {
             HStack(alignment: .bottom, spacing: 8) {
                 BotRoomMemberAvatar(member: event.member(in: room), roster: roster, avatars: avatars, size: 26)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(event.sender(in: room)).font(.caption).foregroundStyle(.secondary)
-                    MarkdownRenderer(content: event.payload["text"].text ?? "")
+                    MarkdownRenderer(content: messageText)
                         .padding(12).background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 20))
+                        .chatMessageContextMenu(actions)
                 }
                 Spacer(minLength: 20)
             }
@@ -158,6 +162,12 @@ private struct BotRoomEventView: View {
             Text(event.systemText).font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity).multilineTextAlignment(.center)
         }
+    }
+
+    private var messageText: String { event.payload["text"].text ?? "" }
+
+    private var actions: [ChatMessageActionItem] {
+        BotMessageActions.items(copyText: messageText, isHapticsEnabled: isHapticsEnabled)
     }
 }
 

@@ -50,6 +50,25 @@ Markdown rendering without token reveal animations. The deferred streaming
 renderer can leave a growing Bot response's trailing viewport blank; an XCTest
 renders evolving snapshots and checks the actual visible output.
 
+Settled messages reuse the Sessions transcript's long-press seam.
+`chatMessageContextMenu` supplies the menu from a plain
+`[ChatMessageActionItem]`, so a transcript names its own actions without owning
+a chat view model; `BotMessageActions` builds that list, and for a Bot it is
+Copy alone over the Markdown source, because the host owns the history and
+edit, regenerate and branch have nothing to act on. Group rooms use the same
+seam.
+
+In-place text selection is deliberately absent. `ResponseTextSelection` hosts
+its content in a view controller that reports no height until its row is laid
+out, so a row inside the `LazyVStack` both transcripts use measures short and
+the scroll lands on blank space — `testLongInflightResponseRemainsVisibleAtLatestEdge`
+and `testRoomSearchHitScrollsToItsSequenceAndDoesNotFollowNewMessages` catch
+it. An eager `VStack` fixes the measurement but builds every settled message on
+open, which is the regression behind incident #463; it showed up on CI as
+`renderFrames` timeouts across the Bot presentation suite. Selection, and the
+"Ask Hermex" quote that depends on it, need a lazy-compatible measurement first
+and are tracked in issue #564.
+
 Activity comes from two sources that never overlap. The full snapshot's
 `messages` rows already carry settled tool rows (`role: tool` with `name`,
 `context`, `args`) and assistant `reasoning`; `BotTranscriptProjection` turns
@@ -391,6 +410,30 @@ Reduce Motion keeps the eyes still, plays no bits and drops the squish. The firs
 is adaptive: `Color.botBody` paints it white in dark appearance and black in
 light, with eyes inverted to match, so the face and the swatch never vanish
 into the background.
+
+## Opening a bot from outside the app
+
+One URL route lands on a bot conversation: `hermes-agent://bot?server=…&
+connection=…&profile=…[&conversation=…]` (`BotDestination` and the parser live in
+`Features/Bots/BotDeepLink.swift`, the host in the widget-shared
+`HermesDeepLink`). It routes only by identity the server owns — configured server
+URL, Bot connection UUID, Profile name — so equal display names, or equal Profile
+names on two connections, can never resolve to each other.
+
+`BotDeepLinkRouter` decides the outcome before anything navigates, from the Bot
+Mode gate, the server registry, the destination server's Keychain connection and
+the auth state: Bot Mode off, an unconfigured server, or a removed or replaced
+connection drops the link and the app just opens; signed out holds it until the
+next sign-in; another server activates first, and the rebuilt tree routes it. The
+roster is never waited on to route. `BotsInboxView` resolves the held destination
+once `open()` has settled, and a Profile the server no longer has simply leaves
+the user on that inbox. Opening follows the ordinary canonical resume rules: a
+link never sends a prompt and never auto-continues on its own.
+
+`conversation` is the bot's durable canonical root when the sender knows it. It is
+seeded as `BotConversation.root`, so the existing changed-root rejection refuses to
+open a replacement conversation under the link's identity; the chat reports that
+back and the inbox says the conversation is no longer available.
 
 ## Bot lifecycle
 
