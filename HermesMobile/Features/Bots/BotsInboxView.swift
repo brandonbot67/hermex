@@ -272,7 +272,11 @@ import SwiftUI
                         openProfile = nil
                         toast = String(localized: "That conversation is no longer available.")
                     })
-            .id(profile.id + connection.id.uuidString + (openConversation ?? ""))
+            // A composite rather than a concatenation: a Profile name and a
+            // conversation root are both arbitrary server strings, so joining them
+            // could let two destinations share one identity and keep the wrong
+            // conversation on screen.
+            .id([profile.id, connection.id.uuidString, openConversation ?? ""])
             .onAppear { inbox.markSeen(profile) }
             .onDisappear { inbox.noteReturn(from: profile) }
     }
