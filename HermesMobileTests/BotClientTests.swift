@@ -232,6 +232,53 @@ import XCTest
         client.close()
     }
 
+    /// The slash panel's two reads stay a narrow shape. `command.dispatch` in
+    /// particular must never widen: the gateway resolves quick commands ahead of
+    /// skills, and one of those can run a shell command on the host.
+    func testSlashAllowlistAdmitsOnlyTheCatalogReadAndABareDispatchName() async throws {
+        BotHTTPFixture.handler = { request in
+            switch request.url!.path {
+            case "/api/status": return (200, .object(["auth_required": .bool(true), "auth_providers": .array([.string("basic")])]))
+            case "/auth/password-login": return (200, .object([:]))
+            case "/api/auth/me": return (200, .object(["provider": .string("basic")]))
+            case "/api/auth/ws-ticket": return (200, .object(["ticket": .string("ticket")]))
+            default: return (404, .null)
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BotHTTPFixture.self]
+        let socket = BotScriptedSocket()
+        let client = BotClient(connection: connection(), configuration: configuration) { _, _ in socket }
+        try await client.connect()
+        defer { client.close() }
+
+        _ = try await client.call("commands.catalog", [:])
+        _ = try await client.call("command.dispatch", [
+            "name": .string("work"), "arg": .string("fix the leak"), "session_id": .string("runtime")
+        ])
+        XCTAssertEqual(socket.sentTextFrames, 2)
+
+        let rejected: [(String, [String: BotJSON])] = [
+            ("slash.exec", ["command": .string("/deploy"), "session_id": .string("runtime")]),
+            ("commands.catalog", ["session_id": .string("runtime")]),
+            ("command.dispatch", ["name": .string("/work"), "arg": .string(""), "session_id": .string("runtime")]),
+            ("command.dispatch", ["name": .string("work fix"), "arg": .string(""), "session_id": .string("runtime")]),
+            ("command.dispatch", ["name": .string(""), "arg": .string(""), "session_id": .string("runtime")]),
+            ("command.dispatch", ["name": .string("work"), "arg": .string(""), "session_id": .string("")]),
+            ("command.dispatch", ["name": .string("work"), "session_id": .string("runtime")]),
+            ("command.dispatch", ["name": .string("work"), "arg": .string(""), "session_id": .string("runtime"), "shell": .bool(true)])
+        ]
+        for (method, params) in rejected {
+            do {
+                _ = try await client.call(method, params)
+                XCTFail("Invalid \(method) call dispatched")
+            } catch {
+                XCTAssertEqual(error as? BotFailure, .unsupported)
+            }
+        }
+        XCTAssertEqual(socket.sentTextFrames, 2)
+    }
+
     func testSettingsAllowlistRejectsUnscopedWritesAndPreservesHostError() async throws {
         BotHTTPFixture.handler = { request in
             switch request.url!.path {

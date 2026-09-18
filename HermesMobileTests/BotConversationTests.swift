@@ -871,6 +871,12 @@ actor BotMemoryDrafts: ChatDraftPersisting {
     var settingsCall: ((String, [String: BotJSON]) -> BotJSON)?
     var lookupFailure: BotFailure?
     var submitFailure: BotFailure?
+    /// What `commands.catalog` answers, and what `command.dispatch` answers for a
+    /// skill; nil means the host has no reply and the RPC fails.
+    var catalog: BotJSON?
+    var catalogFailure: BotFailure?
+    var dispatch: BotJSON?
+    var dispatchFailure: BotFailure?
     var promptReply: BotJSON?
     var stopFailure: BotFailure?
     var beforeDispatch: ((String) -> Void)?
@@ -933,6 +939,14 @@ actor BotMemoryDrafts: ChatDraftPersisting {
             if let respondFailure { throw respondFailure }
             return .object(["status": .string(credentialStatus)])
         case "session.events.since": return replay
+        case "commands.catalog":
+            if let catalogFailure { throw catalogFailure }
+            guard let catalog else { throw BotFailure.unsupported }
+            return catalog
+        case "command.dispatch":
+            if let dispatchFailure { throw dispatchFailure }
+            guard let dispatch else { throw BotFailure.unsupported }
+            return dispatch
         case "prompt.submit", "session.steer", "session.redirect":
             await beforeSubmit?()
             if let submitFailure { throw submitFailure }

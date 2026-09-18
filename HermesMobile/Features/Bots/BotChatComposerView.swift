@@ -78,18 +78,7 @@ struct BotChatComposerView: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
                 }
 
-                if isFocused, model.mayEditDraft,
-                   let trigger = BotMentionTrigger.detect(in: model.draft, selection: selection.range) {
-                    let completions = model.mentions.completions(query: trigger.query)
-                    if !completions.isEmpty {
-                        BotMentionAutocompleteView(completions: completions, avatars: mentionAvatars) { item in
-                            let result = trigger.applying(tag: item.tag, to: model.draft)
-                            model.editDraft(result.draft)
-                            selection = selection.moved(to: result.selection)
-                        }
-                        .padding(.horizontal, 16).padding(.bottom, 8)
-                    }
-                }
+                if isFocused, model.mayEditDraft { autocomplete }
 
                 composerSurface.padding(.horizontal, 16)
 
@@ -140,6 +129,7 @@ struct BotChatComposerView: View {
                 try await model.attachments.data(for: item)
             }
         }
+        .task(id: model.connectionState) { await model.loadSlashCatalog() }
         .task(id: picker) {
             guard picker == nil, shouldRestoreFocusAfterPicker else { return }
             // Match Sessions' short delay while the native picker dismisses.
@@ -178,6 +168,35 @@ struct BotChatComposerView: View {
         }
     }
 
+    /// The one panel the caret can open: bots for an `@`, this connection's
+    /// skills for a `/` that opens the draft. A mention wins, so the two can
+    /// never stack. The skill panel stays closed for Steer and Redirect, where
+    /// the host will not expand an invocation.
+    @ViewBuilder private var autocomplete: some View {
+        if let trigger = BotMentionTrigger.detect(in: model.draft, selection: selection.range) {
+            let completions = model.mentions.completions(query: trigger.query)
+            if !completions.isEmpty {
+                BotMentionAutocompleteView(completions: completions, avatars: mentionAvatars) { item in
+                    let result = trigger.applying(tag: item.tag, to: model.draft)
+                    model.editDraft(result.draft)
+                    selection = selection.moved(to: result.selection)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+            }
+        } else if mode.startsTurn,
+                  let trigger = BotSlashTrigger.detect(in: model.draft, selection: selection.range) {
+            let matches = SlashSkillFormatter.matching(trigger.query, in: model.slashSkills)
+            if !matches.isEmpty {
+                BotSlashAutocompleteView(suggestions: matches) { skill in
+                    let result = trigger.applying("/" + skill.name + " ", to: model.draft)
+                    model.editDraft(result.draft)
+                    selection = selection.moved(to: result.selection)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+            }
+        }
+    }
+
     /// Same pill/card structure as the Sessions composer. The editor keeps its
     /// identity as the attachment strip and controls move around it.
     private var composerSurface: some View {
@@ -195,7 +214,7 @@ struct BotChatComposerView: View {
                     inputHeight: $inputHeight, measuredHeight: $measuredHeight,
                     isDisabled: !model.mayEditDraft, isCollapsed: !isExpanded,
                     isKeyboardSendEnabled: canSend, verticalPadding: 12,
-                    chipSkills: [], chipFilePaths: [],
+                    chipSkills: model.slashSkills, chipFilePaths: [],
                     chipBots: model.mentions.chipReferences(avatars: mentionAvatars), quotes: [],
                     onKeyboardSend: send,
                     onPasteFileProviders: { BotAttachmentPaste.providers($0, model: model) },

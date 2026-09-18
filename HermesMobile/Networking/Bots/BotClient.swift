@@ -137,11 +137,13 @@ import Foundation
                "session.list", "session.resume", "session.events.since",
                "file.attach", "prompt.submit", "session.steer", "session.redirect", "session.interrupt", "approval.respond", "clarify.respond",
                "sudo.respond", "secret.respond", "mcp.setup.respond", "request.answer", "clarify.lock",
-               "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control"].contains(method) || BotRoomRPC.methods.contains(method)
+               "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control",
+               "commands.catalog", "command.dispatch"].contains(method) || BotRoomRPC.methods.contains(method)
         else { throw BotFailure.unsupported }
         try BotRoomRPC.validate(method, params)
         try Self.validateProfileEditorCall(method, params)
         try Self.validateLifecycleCall(method, params)
+        try Self.validateSlashCall(method, params)
         guard let socket, !Task.isCancelled else { throw BotFailure.stale }
         nextID += 1
         let id = nextID
@@ -288,6 +290,26 @@ import Foundation
         case "session.title":
             guard params["session_id"]?.text?.isEmpty == false, params["title"]?.text == BotConversation.canonicalTitle,
                   Set(params.keys) == ["session_id", "title"] else { throw BotFailure.unsupported }
+        default: return
+        }
+    }
+
+    /// The composer's slash panel is the third typed exception. `commands.catalog`
+    /// takes no parameters, and `command.dispatch` carries exactly one bare name —
+    /// no leading slash, no whitespace, no extra key — so this can never widen into
+    /// the general slash runner Bot Mode deliberately does not expose. *Which* names
+    /// are legal is the caller's job: `BotConversation` only dispatches a name the
+    /// catalog reported as a skill and that no command shadows.
+    private static func validateSlashCall(_ method: String, _ params: [String: BotJSON]) throws {
+        switch method {
+        case "commands.catalog":
+            guard params.isEmpty else { throw BotFailure.unsupported }
+        case "command.dispatch":
+            guard Set(params.keys) == ["name", "arg", "session_id"],
+                  let name = params["name"]?.text, !name.isEmpty, !name.hasPrefix("/"),
+                  name.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+                  params["arg"]?.text != nil, params["session_id"]?.text?.isEmpty == false
+            else { throw BotFailure.unsupported }
         default: return
         }
     }

@@ -523,6 +523,58 @@ that Desktop to remain running. The phone cannot autocomplete remote bots
 because there is no read-only remote-roster RPC. Real phone support needs that
 RPC and a relay owner independent of a Desktop renderer.
 
+## Slash suggestions
+
+Typing `/` at the start of a Bot Chat draft opens the slash panel with this
+connection's **skills**. Commands are deliberately absent: the gateway runs those
+only through `slash.exec` and `command.dispatch`'s quick/plugin/registry stages,
+which Bot Mode does not expose, so a command row would insert text nothing runs.
+Model, effort and workspace already have native controls (Chat controls above).
+
+`commands.catalog` (no parameters) is read once per conversation, after connecting,
+driven by the composer. `BotSlashCatalog` reads the `skills` keys for which entries
+are skills and the `pairs` rows for their descriptions, and **drops any skill key
+that also appears in `canon` or `commands`**: those are registry, quick or plugin
+commands, `command.dispatch` resolves them ahead of skills, and a `quick_commands`
+entry of type `exec` runs a shell command on the host. A failed read is silent and
+retried on the next connect; the panel simply does not open and typing and sending
+never wait on it. A reply for a conversation that has moved on is dropped. Nothing
+is shared across servers or connections: `BotConversation` is one
+server/connection/Profile lifetime.
+
+`BotSlashTrigger` narrows `ComposerSlashTrigger` to a `/` that opens the draft and
+ends at its first space — past that the user is typing the skill's argument. The
+panel is closed for Steer and Redirect, which never expand an invocation. A `@`
+mention wins over a `/`, so the two panels never stack. Rows reuse the slash
+panel's dense glass presentation and `SlashSkillFormatter.matching` ranking;
+choosing one inserts `/name ` and the shared composer draws it as an atomic chip
+through `ComposerChipTextView`, exactly as Sessions does.
+
+`prompt.submit` never interprets a leading `/`. So at Send or Queue, a draft that
+opens with a catalog skill is expanded first: `command.dispatch {name, arg,
+session_id}` returns `{type: "skill", message, name, display}`, and `message` is
+what gets submitted. Only a catalog skill name is ever dispatched, and only a
+`skill` reply is used — anything else, or a failed dispatch, sends nothing and
+leaves the draft with an error. Expansion happens before any durable marker, so a
+failure cannot strand a submission. The transcript still shows the typed line,
+because the host projects the invocation back over the stored message
+(`display_kind: "skill_invocation"`).
+
+`BotClient` allowlists `commands.catalog` (no parameters) and `command.dispatch`
+(exactly `name`, `arg`, `session_id`; a bare name with no slash or whitespace) as
+its third typed exception. `slash.exec` stays unsupported.
+
+Group rooms are out of scope: `BotRoomComposerView` is a separate composer and
+does not get the panel.
+
+Contract checked against the `HERMES_AGENT_TESTED_SHA` pin (`3abeca16`, 0.21.2):
+`tui_gateway/methods_tools.py` (`commands.catalog`, `command.dispatch`,
+`_dispatch_quick`/`_dispatch_skill`), `tui_gateway/methods_complete.py`
+(`complete.slash`, a per-keystroke read the catalog replaces) and
+`tui_gateway/session_history.py` (`_skill_scaffold_projection`). Neither read is
+Profile-scoped upstream while dispatch is, so the list belongs to the connection,
+not the Profile. No live mutation was used for validation.
+
 ## Chat controls
 
 The Bot composer reuses Sessions' model/effort menu, model sheet, workspace picker

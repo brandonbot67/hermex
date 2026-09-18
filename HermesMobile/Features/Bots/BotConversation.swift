@@ -37,6 +37,11 @@ import Observation
     let chatControls = BotChatControls()
     let attachments: BotAttachmentDraft
     private(set) var draft = ""
+    /// This connection's skills, read once from `commands.catalog` and kept for
+    /// the conversation's life. Empty until the read lands, and after one fails:
+    /// the panel simply does not open, and typing and sending never wait on it.
+    private(set) var slashSkills: [SkillSlashSuggestion] = []
+    private var slashCatalogLoaded = false
     private(set) var uncertainSend = false
     private(set) var uncertainStop = false
     private(set) var root: String?
@@ -181,6 +186,19 @@ import Observation
         guard mayEditDraft else { return }
         draft = text
         drafts.setDraft(text, for: draftKey)
+    }
+
+    /// Reads this connection's skills once it is connected.
+    ///
+    /// The composer drives this, because its `/` panel is the only thing that
+    /// needs them. A failed read is silent and retried the next time the composer
+    /// asks; a reply for a conversation that has moved on is dropped.
+    func loadSlashCatalog() async {
+        guard connectionState == .connected, !slashCatalogLoaded else { return }
+        let owner = generation
+        guard let reply = try? await request("commands.catalog", [:], owner: owner), generation == owner else { return }
+        slashCatalogLoaded = true
+        slashSkills = BotSlashCatalog.skills(from: reply)
     }
 
     func recover() async {
@@ -468,13 +486,22 @@ import Observation
             errorMessage = String(localized: "Could not save the draft. Your message was not sent.")
             return
         }
+        // Expanding a skill has no effect on the conversation, so it runs before
+        // anything durable: a failure here leaves the draft exactly as it was.
+        let base: String
+        do { base = try await skillText(action, owner: owner) ?? action.text }
+        catch {
+            guard owner == generation, !Task.isCancelled else { return }
+            errorMessage = String(localized: "Could not start that skill. Your draft is still here.")
+            return
+        }
         var promptDispatched = false
         do {
             let text: String
-            if action.attachmentIDs.isEmpty { text = action.text }
+            if action.attachmentIDs.isEmpty { text = base }
             else {
                 isUploadingAttachments = true
-                let task = Task { try await self.attachmentPrompt(action, owner: owner) }
+                let task = Task { try await self.attachmentPrompt(action, base: base, owner: owner) }
                 attachmentUploadTask = task
                 defer {
                     if owner == generation { isUploadingAttachments = false; attachmentUploadTask = nil }
@@ -560,8 +587,36 @@ import Observation
     /// enter another prompt. Uploaded files remain host-owned if Send is cancelled.
     func cancelAttachmentUpload() { attachmentUploadTask?.cancel() }
 
-    private func attachmentPrompt(_ action: PromptAction, owner: Int) async throws -> String {
-        var text = action.text
+    /// The message a skill row actually sends, or `nil` when the draft is prose.
+    ///
+    /// `prompt.submit` never interprets a leading `/`, so a typed `/work fix the
+    /// leak` would reach the agent as literal text. The host expands it instead:
+    /// `command.dispatch` hands back the invocation body the agent reads, while
+    /// the transcript still shows the typed line, because the host projects the
+    /// invocation back over the stored message.
+    ///
+    /// Only a name this connection's catalog reported as a skill is dispatched,
+    /// and only a `skill` reply is used. Nothing else runs from here: the gateway
+    /// resolves quick, plugin and registry commands ahead of skills, and a quick
+    /// command can run a shell command on the host.
+    private func skillText(_ action: PromptAction, owner: Int) async throws -> String? {
+        guard action.mode.startsTurn,
+              let invocation = BotSlashCatalog.invocation(in: action.text),
+              let skill = SlashSkillFormatter.skill(named: invocation.name, in: slashSkills)
+        else { return nil }
+        let reply = try await request("command.dispatch", [
+            "name": .string(skill.name), "arg": .string(invocation.argument),
+            "session_id": .string(action.runtime)
+        ], owner: owner)
+        // Asked for an expansion and did not get one: send nothing rather than
+        // fall back to prose the agent would only read literally.
+        guard reply["type"].text == "skill", let message = reply["message"].text,
+              !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BotFailure.unsupported }
+        return message
+    }
+
+    private func attachmentPrompt(_ action: PromptAction, base: String, owner: Int) async throws -> String {
+        var text = base
         guard !action.attachmentIDs.isEmpty else { return text }
         guard attachments.items.count <= 8,
               attachments.items.reduce(0, { $0 + ($1.size ?? BotAttachmentDraft.maximumFileBytes) }) <= BotAttachmentDraft.maximumTotalBytes
