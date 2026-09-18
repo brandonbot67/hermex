@@ -547,15 +547,22 @@ ends at its first space — past that the user is typing the skill's argument. T
 panel is closed for Steer and Redirect, which never expand an invocation. A `@`
 mention wins over a `/`, so the two panels never stack. Rows reuse the slash
 panel's dense glass presentation and `SlashSkillFormatter.matching` ranking;
-choosing one inserts `/name ` and the shared composer draws it as an atomic chip
-through `ComposerChipTextView`, exactly as Sessions does.
+choosing one inserts the skill's **slug**, which is what `ComposerChipCatalog` is
+keyed by, so the shared composer draws it as an atomic chip through
+`ComposerChipTextView`, exactly as Sessions does. The send path resolves the slug
+back to the host's own key, so a key like `/Weekly_Report` completes as
+`/weekly-report` and still dispatches under its real name.
 
 `prompt.submit` never interprets a leading `/`. So at Send or Queue, a draft that
 opens with a catalog skill is expanded first: `command.dispatch {name, arg,
 session_id}` returns `{type: "skill", message, name, display}`, and `message` is
 what gets submitted. Only a catalog skill name is ever dispatched, and only a
 `skill` reply is used — anything else, or a failed dispatch, sends nothing and
-leaves the draft with an error. Expansion happens before any durable marker, so a
+leaves the draft with an error. The catalog is re-read immediately before
+dispatching, because the cached one is a connect-time snapshot and a command added
+to the host since then would shadow the skill; the read also refreshes the panel.
+The last microseconds of that race cannot be closed from the phone — the gateway
+has no skill-only dispatch. Expansion happens before any durable marker, so a
 failure cannot strand a submission. The transcript still shows the typed line,
 because the host projects the invocation back over the stored message
 (`display_kind: "skill_invocation"`).

@@ -602,8 +602,17 @@ import Observation
     private func skillText(_ action: PromptAction, owner: Int) async throws -> String? {
         guard action.mode.startsTurn,
               let invocation = BotSlashCatalog.invocation(in: action.text),
-              let skill = SlashSkillFormatter.skill(named: invocation.name, in: slashSkills)
+              SlashSkillFormatter.skill(named: invocation.name, in: slashSkills) != nil
         else { return nil }
+        // The cached catalog is a snapshot of the host at connect time. A command
+        // added since then would shadow this name, so the decision is made against
+        // a fresh read instead — and the panel gets the newer skills for free. The
+        // last microseconds of the race cannot be closed from here: the gateway has
+        // no skill-only dispatch.
+        slashSkills = BotSlashCatalog.skills(from: try await request("commands.catalog", [:], owner: owner))
+        guard let skill = SlashSkillFormatter.skill(named: invocation.name, in: slashSkills) else {
+            throw BotFailure.unsupported
+        }
         let reply = try await request("command.dispatch", [
             "name": .string(skill.name), "arg": .string(invocation.argument),
             "session_id": .string(action.runtime)

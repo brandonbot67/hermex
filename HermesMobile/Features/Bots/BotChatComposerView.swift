@@ -188,7 +188,10 @@ struct BotChatComposerView: View {
             let matches = SlashSkillFormatter.matching(trigger.query, in: model.slashSkills)
             if !matches.isEmpty {
                 BotSlashAutocompleteView(suggestions: matches) { skill in
-                    let result = trigger.applying("/" + skill.name + " ", to: model.draft)
+                    // The slug, exactly as Sessions completes a skill: it is what
+                    // `ComposerChipCatalog` is keyed by, so the chip draws. The send
+                    // path resolves it back to the host's own key before dispatch.
+                    let result = trigger.applying("/" + skill.slashName + " ", to: model.draft)
                     model.editDraft(result.draft)
                     selection = selection.moved(to: result.selection)
                 }

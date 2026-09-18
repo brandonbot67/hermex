@@ -225,6 +225,30 @@ import XCTest
         model.suspend()
     }
 
+    /// The cached catalog is a snapshot. A command added to the host since the read
+    /// shadows the skill — `command.dispatch` resolves quick commands first, and a
+    /// quick command can run a shell command — so the send re-reads before dispatching.
+    func testACommandAddedSinceTheCatalogReadBlocksTheDispatch() async {
+        let wire = BotFixtureWire()
+        wire.catalogQueue = [
+            catalogReply(skills: ["/deploy": .object([:])], pairs: [], canon: [:], commands: [:]),
+            catalogReply(skills: ["/deploy": .object([:])], pairs: [], canon: ["/deploy": .string("/deploy")], commands: [:])
+        ]
+        wire.catalog = catalogReply()
+        let model = make(wire)
+        await model.recover()
+        await model.loadSlashCatalog()
+        XCTAssertEqual(model.slashSkills.map(\.name), ["deploy"])
+        model.editDraft("/deploy staging")
+        await model.send()
+        XCTAssertFalse(wire.calls.contains { $0.0 == "command.dispatch" })
+        XCTAssertFalse(wire.calls.contains { $0.0 == "prompt.submit" })
+        XCTAssertEqual(model.draft, "/deploy staging")
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.slashSkills.isEmpty, "The fresh read also refreshes the panel")
+        model.suspend()
+    }
+
     /// Steer and Redirect add guidance to work already running; the host expands
     /// no invocation there, so the typed line goes as written.
     func testSteeringNeverDispatchesASkill() async {
@@ -239,6 +263,29 @@ import XCTest
         await model.submit(action)
         XCTAssertFalse(wire.calls.contains { $0.0 == "command.dispatch" })
         XCTAssertEqual(wire.calls.last(where: { $0.0 == "session.steer" })?.1["text"]?.text, "/work fix the leak")
+        model.suspend()
+    }
+
+    /// The panel inserts the slug, because that is what the composer's chip catalog
+    /// is keyed by; the send path resolves it back to the host's own key.
+    func testASlugCompletionStillDispatchesTheHostsKey() async {
+        let wire = BotFixtureWire()
+        let catalog = catalogReply(
+            skills: ["/Weekly_Report": .object([:])],
+            pairs: [.array([.string("/Weekly_Report"), .string("Write the weekly report")])],
+            canon: [:], commands: [:])
+        wire.catalog = catalog
+        wire.dispatch = .object(["type": .string("skill"), "message": .string("<expanded>")])
+        let model = make(wire)
+        await model.recover()
+        await model.loadSlashCatalog()
+        let skill = try? XCTUnwrap(model.slashSkills.first)
+        XCTAssertEqual(skill?.name, "Weekly_Report")
+        XCTAssertEqual(skill?.slashName, "weekly-report")
+        model.editDraft("/weekly-report for September")
+        await model.send()
+        XCTAssertEqual(wire.calls.last(where: { $0.0 == "command.dispatch" })?.1["name"]?.text, "Weekly_Report")
+        XCTAssertEqual(wire.calls.last(where: { $0.0 == "prompt.submit" })?.1["text"]?.text, "<expanded>")
         model.suspend()
     }
 
