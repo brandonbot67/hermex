@@ -913,9 +913,17 @@ import XCTest
         // Toolbar buttons are hosted by the navigation bar, whose backing
         // differs by build SDK: newer SDKs expose the button as a plain view
         // carrying the label, older ones keep it on the bar button item
-        // itself. VoiceOver reads either, so accept either.
-        let labels = descendants(sheet).compactMap(\.accessibilityLabel)
-            + barButtonItems(in: sheet).compactMap(\.accessibilityLabel)
+        // itself. VoiceOver reads either, so accept either. Like the OCR
+        // reads above, wait for the label to land instead of asserting on
+        // the first pass: on loaded machines the pixels commit before the
+        // accessibility tree does.
+        var labels: [String] = []
+        for _ in 0..<8 {
+            labels = descendants(sheet).compactMap(\.accessibilityLabel)
+                + barButtonItems(in: sheet).compactMap(\.accessibilityLabel)
+            if labels.contains("Copy") { break }
+            await renderFrames(4)
+        }
         XCTAssertTrue(labels.contains("Copy"),
                       "The icon-only toolbar action must remain named for VoiceOver, found: \(labels)")
     }
