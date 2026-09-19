@@ -992,9 +992,8 @@ import XCTest
     }
 
     /// Every accessibility label exposed under a view: hosted view labels,
-    /// explicit accessibility elements (which need not be views), elements
-    /// vended dynamically through the accessibility container protocol, and
-    /// the bar button items behind a UIKit-backed toolbar.
+    /// explicit accessibility elements (which need not be views), and the bar
+    /// button items behind a UIKit-backed toolbar.
     private func accessibilityLabels(in root: UIView) -> [String] {
         var labels: [String] = []
         var queue = [root]
@@ -1007,16 +1006,6 @@ import XCTest
                     queue.append(elementView)
                 } else {
                     labels += accessibilityLabel(of: element)
-                }
-            }
-            if let container = view as? AccessibilityElementContainer {
-                for index in 0..<container.accessibilityElementCount() {
-                    let element = container.accessibilityElement(at: index)
-                    if let elementView = element as? UIView {
-                        queue.append(elementView)
-                    } else {
-                        labels += accessibilityLabel(of: element)
-                    }
                 }
             }
             if let bar = view as? UINavigationBar, let top = bar.topItem {
@@ -1038,14 +1027,6 @@ import XCTest
             return [label]
         }
         return []
-    }
-
-    /// Mirrors UIAccessibilityContainer so the cast checks for the methods
-    /// dynamically: SwiftUI hosting views may vend elements without
-    /// declaring conformance.
-    @objc private protocol AccessibilityElementContainer {
-        func accessibilityElementCount() -> Int
-        func accessibilityElement(at index: Int) -> Any?
     }
 
     /// Moves a SwiftUI scroll view the way a finger would. iOS 27 restores its
