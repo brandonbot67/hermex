@@ -910,8 +910,14 @@ import XCTest
         let expanded = try screenshot(sheet, name: "477-delegation-results-sheet")
         XCTAssertTrue(expanded.contains("Delegated work"), expanded)
         XCTAssertTrue(expanded.contains("Unique full worker result body"), expanded)
-        XCTAssertTrue(descendants(sheet).contains { $0.accessibilityLabel == "Copy" },
-                      "The icon-only toolbar action must remain named for VoiceOver")
+        // Toolbar buttons are hosted by the navigation bar, whose backing
+        // differs by build SDK: newer SDKs expose the button as a plain view
+        // carrying the label, older ones keep it on the bar button item
+        // itself. VoiceOver reads either, so accept either.
+        let labels = descendants(sheet).compactMap(\.accessibilityLabel)
+            + barButtonItems(in: sheet).compactMap(\.accessibilityLabel)
+        XCTAssertTrue(labels.contains("Copy"),
+                      "The icon-only toolbar action must remain named for VoiceOver, found: \(labels)")
     }
 
     /// Finds the fixture's saturated avatar colors by row, without depending on
@@ -973,6 +979,18 @@ import XCTest
 
     private func descendants(_ view: UIView) -> [UIView] {
         [view] + view.subviews.flatMap(descendants)
+    }
+
+    /// Bar button items behind a SwiftUI toolbar. The items are the
+    /// accessibility elements on older build SDKs, where no hosted view
+    /// carries the label.
+    private func barButtonItems(in view: UIView) -> [UIBarButtonItem] {
+        var items: [UIBarButtonItem] = []
+        if let bar = view as? UINavigationBar, let top = bar.topItem {
+            items += top.leftBarButtonItems ?? []
+            items += top.rightBarButtonItems ?? []
+        }
+        return items + view.subviews.flatMap(barButtonItems(in:))
     }
 
     /// Moves a SwiftUI scroll view the way a finger would. iOS 27 restores its
