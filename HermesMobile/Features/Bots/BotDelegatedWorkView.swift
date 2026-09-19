@@ -339,6 +339,7 @@ struct BotDelegationResultsSheet: View {
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
+                    .accessibilityLabel("Copy")
                     .disabled(completion.report.isEmpty)
                 }
             }
