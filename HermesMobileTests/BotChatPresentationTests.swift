@@ -922,7 +922,7 @@ import XCTest
             await renderFrames(4)
         }
         XCTAssertTrue(labels.contains("Copy"),
-                      "The icon-only toolbar action must remain named for VoiceOver, found: \(labels)")
+                      "The icon-only toolbar action must remain named for VoiceOver, found: \(labels) tree: \(accessibilityDigest(in: sheet))")
     }
 
     /// Finds the fixture's saturated avatar colors by row, without depending on
@@ -987,8 +987,9 @@ import XCTest
     }
 
     /// Every accessibility label exposed under a view: hosted view labels,
-    /// explicit accessibility elements (which need not be views), and the
-    /// bar button items behind a UIKit-backed toolbar.
+    /// explicit accessibility elements (which need not be views), elements
+    /// vended dynamically through the accessibility container protocol, and
+    /// the bar button items behind a UIKit-backed toolbar.
     private func accessibilityLabels(in root: UIView) -> [String] {
         var labels: [String] = []
         var queue = [root]
@@ -999,12 +1000,18 @@ import XCTest
             for element in view.accessibilityElements ?? [] {
                 if let elementView = element as? UIView {
                     queue.append(elementView)
-                } else if let node = element as? UIAccessibilityElement,
-                          let label = node.accessibilityLabel {
-                    labels.append(label)
-                } else if let object = element as? NSObject,
-                          let label = object.value(forKey: "accessibilityLabel") as? String {
-                    labels.append(label)
+                } else {
+                    labels += accessibilityLabel(of: element)
+                }
+            }
+            if let container = view as? AccessibilityElementContainer {
+                for index in 0..<container.accessibilityElementCount() {
+                    let element = container.accessibilityElement(at: index)
+                    if let elementView = element as? UIView {
+                        queue.append(elementView)
+                    } else {
+                        labels += accessibilityLabel(of: element)
+                    }
                 }
             }
             if let bar = view as? UINavigationBar, let top = bar.topItem {
@@ -1017,6 +1024,42 @@ import XCTest
             queue += view.subviews
         }
         return labels
+    }
+
+    private func accessibilityLabel(of element: Any?) -> [String] {
+        if let node = element as? UIAccessibilityElement { return node.accessibilityLabel.map { [$0] } ?? [] }
+        if let object = element as? NSObject,
+           let label = object.value(forKey: "accessibilityLabel") as? String {
+            return [label]
+        }
+        return []
+    }
+
+    /// One-line summary of how a hierarchy publishes accessibility, for
+    /// failure messages when a label read comes back empty.
+    private func accessibilityDigest(in root: UIView) -> String {
+        var views = 0, withElements = 0
+        var containers: [String] = []
+        var queue = [root]
+        var seen: Set<ObjectIdentifier> = []
+        while let view = queue.popLast() {
+            guard seen.insert(ObjectIdentifier(view)).inserted else { continue }
+            views += 1
+            if !(view.accessibilityElements ?? []).isEmpty { withElements += 1 }
+            if view is AccessibilityElementContainer {
+                containers.append(String(describing: type(of: view)))
+            }
+            queue += view.subviews
+        }
+        return "views=\(views) withElements=\(withElements) containers=\(containers)"
+    }
+
+    /// Mirrors UIAccessibilityContainer so the cast checks for the methods
+    /// dynamically: SwiftUI hosting views may vend elements without
+    /// declaring conformance.
+    @objc private protocol AccessibilityElementContainer {
+        func accessibilityElementCount() -> Int
+        func accessibilityElement(at index: Int) -> Any?
     }
 
     /// Moves a SwiftUI scroll view the way a finger would. iOS 27 restores its
