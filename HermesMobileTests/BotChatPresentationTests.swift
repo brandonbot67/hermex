@@ -910,17 +910,14 @@ import XCTest
         let expanded = try screenshot(sheet, name: "477-delegation-results-sheet")
         XCTAssertTrue(expanded.contains("Delegated work"), expanded)
         XCTAssertTrue(expanded.contains("Unique full worker result body"), expanded)
-        // Toolbar buttons are hosted by the navigation bar, whose backing
-        // differs by build SDK: newer SDKs expose the button as a plain view
-        // carrying the label, older ones keep it on the bar button item
-        // itself. VoiceOver reads either, so accept either. Like the OCR
-        // reads above, wait for the label to land instead of asserting on
-        // the first pass: on loaded machines the pixels commit before the
-        // accessibility tree does.
+        // The toolbar's backing differs by build SDK: the button can surface
+        // as a labeled hosted view, as a bar button item, or as a bare
+        // accessibility node. VoiceOver reads any of them, so accept any.
+        // Like the OCR reads above, wait for the label to land instead of
+        // asserting on the first pass.
         var labels: [String] = []
         for _ in 0..<8 {
-            labels = descendants(sheet).compactMap(\.accessibilityLabel)
-                + barButtonItems(in: sheet).compactMap(\.accessibilityLabel)
+            labels = accessibilityLabels(in: sheet)
             if labels.contains("Copy") { break }
             await renderFrames(4)
         }
@@ -989,16 +986,37 @@ import XCTest
         [view] + view.subviews.flatMap(descendants)
     }
 
-    /// Bar button items behind a SwiftUI toolbar. The items are the
-    /// accessibility elements on older build SDKs, where no hosted view
-    /// carries the label.
-    private func barButtonItems(in view: UIView) -> [UIBarButtonItem] {
-        var items: [UIBarButtonItem] = []
-        if let bar = view as? UINavigationBar, let top = bar.topItem {
-            items += top.leftBarButtonItems ?? []
-            items += top.rightBarButtonItems ?? []
+    /// Every accessibility label exposed under a view: hosted view labels,
+    /// explicit accessibility elements (which need not be views), and the
+    /// bar button items behind a UIKit-backed toolbar.
+    private func accessibilityLabels(in root: UIView) -> [String] {
+        var labels: [String] = []
+        var queue = [root]
+        var seen: Set<ObjectIdentifier> = []
+        while let view = queue.popLast() {
+            guard seen.insert(ObjectIdentifier(view)).inserted else { continue }
+            if let label = view.accessibilityLabel { labels.append(label) }
+            for element in view.accessibilityElements ?? [] {
+                if let elementView = element as? UIView {
+                    queue.append(elementView)
+                } else if let node = element as? UIAccessibilityElement,
+                          let label = node.accessibilityLabel {
+                    labels.append(label)
+                } else if let object = element as? NSObject,
+                          let label = object.value(forKey: "accessibilityLabel") as? String {
+                    labels.append(label)
+                }
+            }
+            if let bar = view as? UINavigationBar, let top = bar.topItem {
+                labels += (top.leftBarButtonItems ?? []).compactMap(\.accessibilityLabel)
+                labels += (top.rightBarButtonItems ?? []).compactMap(\.accessibilityLabel)
+            }
+            if let toolbar = view as? UIToolbar {
+                labels += (toolbar.items ?? []).compactMap(\.accessibilityLabel)
+            }
+            queue += view.subviews
         }
-        return items + view.subviews.flatMap(barButtonItems(in:))
+        return labels
     }
 
     /// Moves a SwiftUI scroll view the way a finger would. iOS 27 restores its
