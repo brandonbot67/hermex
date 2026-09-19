@@ -138,13 +138,15 @@ import Foundation
                "file.attach", "prompt.submit", "session.steer", "session.redirect", "session.interrupt", "approval.respond", "clarify.respond",
                "sudo.respond", "secret.respond", "mcp.setup.respond", "request.answer", "clarify.lock",
                "model.options", "config.set", "session.cwd.set", "session.control.read", "session.control",
-               "commands.catalog", "command.dispatch", "complete.path"].contains(method) || BotRoomRPC.methods.contains(method)
+               "commands.catalog", "command.dispatch", "complete.path",
+               "subagent.list", "subagent.tail", "subagent.interrupt"].contains(method) || BotRoomRPC.methods.contains(method)
         else { throw BotFailure.unsupported }
         try BotRoomRPC.validate(method, params)
         try Self.validateProfileEditorCall(method, params)
         try Self.validateLifecycleCall(method, params)
         try Self.validateSlashCall(method, params)
         try Self.validateCompletionCall(method, params)
+        try Self.validateSubagentCall(method, params)
         guard let socket, !Task.isCancelled else { throw BotFailure.stale }
         nextID += 1
         let id = nextID
@@ -329,6 +331,23 @@ import Foundation
               params["session_id"]?.text?.isEmpty == false,
               params["profile"]?.text?.isEmpty == false
         else { throw BotFailure.unsupported }
+    }
+
+    /// Delegated work stays a narrow session-owned exception: list names only
+    /// the current runtime, while tail and interrupt add exactly one worker id.
+    /// Steering and the wider orchestration RPC surface remain unavailable.
+    private static func validateSubagentCall(_ method: String, _ params: [String: BotJSON]) throws {
+        switch method {
+        case "subagent.list":
+            guard Set(params.keys) == ["session_id"],
+                  params["session_id"]?.text?.isEmpty == false else { throw BotFailure.unsupported }
+        case "subagent.tail", "subagent.interrupt":
+            guard Set(params.keys) == ["session_id", "subagent_id"],
+                  params["session_id"]?.text?.isEmpty == false,
+                  params["subagent_id"]?.text?.isEmpty == false else { throw BotFailure.unsupported }
+        default:
+            return
+        }
     }
 
     private func consume(_ frame: BotJSON) {
