@@ -100,14 +100,19 @@ polled, and token/reasoning events never trigger a read.
 
 A worker tail is loaded only when tapped through
 `subagent.tail({session_id, subagent_id})`. Both host and client cap it at the
-latest 16 KiB and say when earlier output was cut. Interrupt is the only worker
-write in this slice. The phone re-lists immediately before
+latest 16 KiB and say when earlier output was cut. Cancelling or timing out a
+list/tail read fails only that optional inspection request; it never closes an
+otherwise usable Bot conversation. Interrupt is the only worker write in this
+slice. The phone re-lists immediately before
 `subagent.interrupt({session_id, subagent_id})` and compares the row's
 `started_at` and `delegation_id`, so a worker that finished during confirmation
-or a recycled id is not targeted. The confirmation states that Hermex cannot
-resume the worker and that its parent and siblings continue. An interrupt is
-never retried; a lost reply has an unknown outcome. Ownership rejection asks for
-a reconnect, and hosts without the methods simply show no worker control.
+or an id replaced between snapshots is not dispatched. Current hosts generate
+each `subagent_id` with a fresh UUID suffix; inside the interrupt handler they
+resolve the transport-owned record once and act on that exact agent object.
+The confirmation states that Hermex cannot resume the worker and that its parent
+and siblings continue. An interrupt is never retried; a lost reply has an
+unknown outcome. Ownership rejection asks for a reconnect, and hosts without
+the methods simply show no worker control.
 Steering and every wider delegation, process, spawn-tree and verification RPC
 remain outside the BotClient allowlist.
 

@@ -3,8 +3,14 @@ import Foundation
 /// One cookie jar and socket per connection owner. The receive loop multiplexes
 /// RPC replies and events, so a quiet tool never blocks a Stop request.
 @MainActor final class BotClient: BotTransport {
+    private static let cancellationSafeMethods: Set<String> = [
+        "file.attach", "complete.path", "subagent.list", "subagent.tail"
+    ]
+    private static let nonDisconnectingTimeoutMethods: Set<String> = ["subagent.list", "subagent.tail"]
+
     private let connection: BotConnection
     private let session: URLSession
+    private let rpcDeadline: Duration
     private var socket: (any BotSocket)?
     private let socketFactory: ((URL, [String]) -> any BotSocket)?
     private var reader: Task<Void, Never>?
@@ -23,9 +29,11 @@ import Foundation
     var onDisconnect: ((Error) -> Void)?
 
     init(connection: BotConnection, configuration: URLSessionConfiguration = .ephemeral,
+         rpcDeadline: Duration = .seconds(30),
          socketFactory: ((URL, [String]) -> any BotSocket)? = nil) {
         self.socketFactory = socketFactory
         self.connection = connection
+        self.rpcDeadline = rpcDeadline
         configuration.timeoutIntervalForRequest = 15
         configuration.timeoutIntervalForResource = 30
         session = URLSession(configuration: configuration)
@@ -181,11 +189,17 @@ import Foundation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[id] = continuation
+                let rpcDeadline = self.rpcDeadline
                 deadlines[id] = Task { [weak self] in
-                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    do { try await Task.sleep(for: rpcDeadline) } catch { return }
                     guard let self, self.generation == owner else { return }
-                    self.close()
-                    self.onDisconnect?(BotFailure.transport)
+                    if Self.nonDisconnectingTimeoutMethods.contains(method) {
+                        self.deadlines.removeValue(forKey: id)
+                        self.pending.removeValue(forKey: id)?.resume(throwing: BotFailure.transport)
+                    } else {
+                        self.close()
+                        self.onDisconnect?(BotFailure.transport)
+                    }
                 }
                 Task { [weak self] in
                     guard let self, self.generation == owner, self.pending[id] != nil else { return }
@@ -208,10 +222,10 @@ import Foundation
         } onCancel: {
             Task { @MainActor [weak self] in
                 guard let self, self.generation == owner else { return }
-                if method == "file.attach" || method == "complete.path" {
-                    // Read-only RPCs have no outcome to learn from a late reply:
-                    // one stores bytes and one reads a directory. Cancelling one
-                    // need not drop the conversation.
+                if Self.cancellationSafeMethods.contains(method) {
+                    // These calls never control agent execution. Cancelling one
+                    // can discard a late reply without making the conversation's
+                    // transport state ambiguous.
                     self.deadlines.removeValue(forKey: id)?.cancel()
                     self.pending.removeValue(forKey: id)?.resume(throwing: CancellationError())
                 } else { self.close() }

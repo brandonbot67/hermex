@@ -25,9 +25,9 @@ struct BotDelegatedWorker: Identifiable, Equatable, Sendable {
     var id: Identity { identity }
     var identity: Identity { Identity(subagentID: subagentID, startedAt: startedAt, delegationID: delegationID) }
 
-    /// The host recycles subagent ids. Its timestamp is therefore required for
-    /// the destructive control, even though a row with older/missing fields can
-    /// still be inspected safely.
+    /// Treat ids as potentially reusable across snapshots even though current
+    /// hosts generate a fresh id per spawn. Destructive control therefore also
+    /// requires the generation-bearing timestamp.
     var canInterrupt: Bool { startedAt != nil }
 
     init?(_ value: BotJSON) {
@@ -305,8 +305,9 @@ struct BotDelegationCompletion: Identifiable, Equatable, Sendable {
             if found {
                 interruptedWorker = action.worker
             } else {
-                errorMessage = String(localized: "This worker is no longer active.")
                 await refresh()
+                guard owns(action.context) else { return }
+                errorMessage = String(localized: "This worker is no longer active.")
             }
         } catch {
             guard owns(action.context), interruptingWorker == action.worker, !Task.isCancelled else { return }

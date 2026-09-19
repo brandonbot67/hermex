@@ -174,6 +174,31 @@ import XCTest
         XCTAssertEqual(work.interruptedWorker?.subagentID, "child")
     }
 
+    func testInterruptNotFoundKeepsTheInactiveMessageAfterRefreshingTheRoster() async throws {
+        let wire = BotDelegatedWorkWire()
+        let row = worker(id: "child", startedAt: 1)
+        var listCount = 0
+        wire.handler = { method, _ in
+            switch method {
+            case "subagent.list":
+                defer { listCount += 1 }
+                return .object(["subagents": .array(listCount < 2 ? [row] : [])])
+            case "subagent.interrupt":
+                return .object(["found": .bool(false), "subagent_id": .string("child")])
+            default: throw BotFailure.unsupported
+            }
+        }
+        let work = BotDelegatedWork(wire: wire)
+        await work.connect(context())
+        let action = try XCTUnwrap(work.prepareInterrupt(try XCTUnwrap(work.workers.first)))
+
+        await work.interrupt(action)
+
+        XCTAssertTrue(work.workers.isEmpty)
+        XCTAssertEqual(work.errorMessage, "This worker is no longer active.")
+        XCTAssertEqual(wire.calls.map(\.method), ["subagent.list", "subagent.list", "subagent.interrupt", "subagent.list"])
+    }
+
     func testUnsupportedMethodDegradesWithoutInventingWorkers() async {
         let wire = BotDelegatedWorkWire()
         wire.handler = { _, _ in throw BotFailure.rejected(-32601) }
