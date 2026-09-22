@@ -11,7 +11,6 @@ import subprocess
 PHASES = (
     ("TOOLCHAIN_OUTCOME", "Toolchain setup", "toolchain.log"),
     ("SELECTION_OUTCOME", "Simulator selection", "selection.log"),
-    ("BOOT_OUTCOME", "Simulator boot", "boot.log"),
     ("BUILD_OUTCOME", "Build for testing", "build.log"),
     ("TEST_OUTCOME", "Test execution", "tests.log"),
 )

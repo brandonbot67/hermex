@@ -27,12 +27,12 @@ class ReportTests(unittest.TestCase):
         self.assertIn("RoomTests.testCachedSearch(): XCTAssertEqual failed", text)
         self.assertIn("No phase log was produced", text)
 
-    def test_cancelled_boot_is_not_reported_as_an_assertion_failure(self):
+    def test_cancelled_execution_is_not_reported_as_an_assertion_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             logs = Path(directory)
-            (logs / "boot.log").write_text("Waiting for SpringBoard\n")
-            text = report.render({"BOOT_OUTCOME": "cancelled", "TEST_OUTCOME": "skipped"}, logs)
-        self.assertIn("phase: Simulator boot", text)
+            (logs / "tests.log").write_text("Waiting for SpringBoard\n")
+            text = report.render({"TEST_OUTCOME": "cancelled"}, logs)
+        self.assertIn("phase: Test execution", text)
         self.assertIn("Waiting for SpringBoard", text)
         self.assertNotIn("#### Test failures", text)
 

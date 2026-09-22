@@ -75,6 +75,7 @@ jobs:
       SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
       SIMULATOR_NAME: iPhone 17
       CI_LOG_DIR: ci-logs
+      TEST_WORKER_COUNT: 1
 
     steps:
       - name: Check out
@@ -115,20 +116,6 @@ jobs:
               output.write(f"udid={udid}\n")
           PYTHON
 
-      - name: Boot simulator
-        id: boot
-        timeout-minutes: 5
-        env:
-          SIMULATOR_UDID: ${{ steps.sim.outputs.udid }}
-        run: |
-          set -euo pipefail
-          start_seconds=${SECONDS}
-          report_duration() {
-            echo "- Simulator boot: $((SECONDS - start_seconds))s" >> "${GITHUB_STEP_SUMMARY}"
-          }
-          trap report_duration EXIT
-          xcrun simctl bootstatus "${SIMULATOR_UDID}" -b 2>&1 | tee "${CI_LOG_DIR}/boot.log"
-
       - name: Build for testing
         id: build
         env:
@@ -156,7 +143,7 @@ jobs:
           set -euo pipefail
           start_seconds=${SECONDS}
           report_duration() {
-            echo "- Tests (serial): $((SECONDS - start_seconds))s" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Tests (one worker): $((SECONDS - start_seconds))s" >> "${GITHUB_STEP_SUMMARY}"
           }
           trap report_duration EXIT
           xcodebuild test-without-building \
@@ -165,7 +152,8 @@ jobs:
             -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
             -derivedDataPath "${DERIVED_DATA_PATH}" \
             -resultBundlePath "${RESULT_BUNDLE_PATH}" \
-            -parallel-testing-enabled NO \
+            -parallel-testing-enabled YES \
+            -parallel-testing-worker-count "${TEST_WORKER_COUNT}" \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee "${CI_LOG_DIR}/tests.log"
 
       - name: Report results
@@ -174,7 +162,6 @@ jobs:
         env:
           TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
           SELECTION_OUTCOME: ${{ steps.sim.outcome }}
-          BOOT_OUTCOME: ${{ steps.boot.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
         run: python3 ci/report_test_results.py
