@@ -16,7 +16,7 @@ Fixes #
 
 ## Checklist
 
-- [ ] The full test suite passes locally (`xcodebuild test -project HermesMobile.xcodeproj -scheme HermesMobile -destination 'platform=iOS Simulator,name=iPhone 17'`)
+- [ ] Local validation passes using `scripts/test-sim <assigned-simulator-udid>` with affected tests or the full suite, as required by `AGENTS.md` § Verifying; the selection and results are recorded above
 - [ ] New/changed `Codable` models decode tolerantly (optionals for fields the server might add or rename)
 - [ ] No new third-party dependencies (the list in `AGENTS.md` is locked)
 - [ ] No invented API endpoints or JSON shapes (verified against upstream source or a running server)

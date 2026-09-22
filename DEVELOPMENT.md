@@ -72,12 +72,17 @@ are ambiguous, so pass the UDID. The runner never chooses another device or
 creates one, and refuses to boot a fifth simulator.
 
 ```zsh
-# Full suite (also builds): use the same assigned UDID throughout the session.
-scripts/test-sim <simulator-udid>
-
 # Focused tests; repeat --only for multiple classes or individual test methods.
 scripts/test-sim <simulator-udid> --only HermesMobileTests/BotLiveActivityTests
+
+# Full suite (also builds): use the same assigned UDID throughout the session.
+scripts/test-sim <simulator-udid>
 ```
+
+Choose local coverage using `AGENTS.md` § Verifying: ordinary slices run affected
+tests, while broad changes run the full suite. PR CI runs every retained test
+with one simulator worker. `--only` limits execution, but still builds the app
+and test target.
 
 The runner waits for simulator readiness, terminates any running Hermex app on
 that device (an app left attached by a build-and-run makes the test runner hang

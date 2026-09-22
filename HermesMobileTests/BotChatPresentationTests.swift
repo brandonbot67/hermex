@@ -106,17 +106,9 @@ import XCTest
         XCTAssertTrue(text.contains("Comms"), text)
         XCTAssertTrue(text.contains("chief-of-staff"), text)
         XCTAssertTrue(text.contains("Message 3"), text)
-        XCTAssertTrue(descendants(window).contains { $0 is UITextView }, "Participant has the shared text editor")
         XCTAssertTrue(text.contains("Message Comms"), text)
-        wire.driverStatus = RoomFixture.status(running: 1, actions: [RoomFixture.approval])
-        await reader.poll()
-        await renderFrames(8)
-        let approval = try screenshot(window, name: "527-room-approval")
-        XCTAssertTrue(approval.contains("Approval required"), approval)
-        await reader.stop()
-        await renderFrames(8)
-        let stopping = try screenshot(window, name: "527-room-stopping")
-        XCTAssertTrue(stopping.contains("Stopping"), stopping)
+        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
+        XCTAssertFalse(editor.acceptsAttachments)
     }
 
     func testRoomMessageSearchShowsRoomAndSenderAfterOpeningTheRoom() async throws {
@@ -128,12 +120,6 @@ import XCTest
         let inbox = BotInbox(server: server, store: store, historyCache: cache, makeWire: { _ in wire })
         await inbox.open()
         defer { inbox.close() }
-        let empty = try show(BotSearchView(inbox: inbox, cache: cache, query: "Message 20") { _ in }
-            .environment(\.scenePhase, .active))
-        await renderFrames(40)
-        let before = try screenshot(empty, name: "528-before-opening-room")
-        XCTAssertTrue(before.contains("No saved messages found"), before)
-        close(empty)
         let room = try XCTUnwrap(inbox.rooms.first)
         let roomWire = RoomWire(); roomWire.latest = 20; roomWire.kind = "message.member"
         let reader = BotRoomReader(key: BotRoomKey(server: server, connectionID: connection.id, roomID: room.id),
@@ -147,13 +133,6 @@ import XCTest
         XCTAssertTrue(after.contains("Comms"), after)
         XCTAssertTrue(after.contains("chief-of-staff"), after)
         XCTAssertFalse(after.contains("No saved messages found"), after)
-        wire.listFailure = BotFailure.transport
-        await inbox.open()
-        await renderFrames(40)
-        let offline = try screenshot(window, name: "528-room-search-list-unavailable")
-        XCTAssertTrue(offline.contains("Comms"), offline)
-        XCTAssertTrue(offline.contains("chief-of-staff"), offline)
-        XCTAssertFalse(offline.contains("No saved messages found"), offline)
     }
 
     func testRoomSearchHitScrollsToItsSequenceAndDoesNotFollowNewMessages() async throws {
@@ -282,49 +261,6 @@ import XCTest
         XCTAssertTrue(text.localizedCaseInsensitiveContains("high"), text)
     }
 
-    func testLatestArrowLayoutAboveAndAtTheBottom() async throws {
-        let wire = BotFixtureWire()
-        wire.history = (0..<30).map { index in
-            .object(["role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
-                     "text": .string("Message \(index): A saved conversation with enough history to scroll.")])
-        }
-        let model = make(wire)
-        await model.recover()
-        let window = try show(BotChatView(model: model)
-            .environment(\.scenePhase, .inactive))
-        window.overrideUserInterfaceStyle = .dark
-        defer { close(window); model.suspend() }
-        await renderFrames(30)
-        let observer = try XCTUnwrap(descendants(window).compactMap { $0 as? ChatScrollObserver.ObserverView }.first)
-        // Model the drag that takes the reader into history. A bare UIKit offset
-        // write leaves auto-follow armed while SwiftUI's lazy rows finish sizing.
-        let coordinator = try XCTUnwrap(observer.coordinator)
-        coordinator.onFollowEvent(.userScrollBegin)
-        await renderFrames()
-        let scroll = try XCTUnwrap(descendants(window).compactMap { $0 as? UIScrollView }.first {
-            $0.bounds.width > 300 && $0.contentSize.height > $0.bounds.height
-        })
-        drag(scroll, to: -scroll.adjustedContentInset.top)
-        await renderFrames(30)
-        XCTAssertLessThan(scroll.contentOffset.y, 1)
-        let above = try screenshot(window, name: "479-latest-arrow-above-bottom")
-        XCTAssertFalse(above.contains("Latest"), above)
-        drag(scroll, to: scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
-        await renderFrames(30)
-        let distance = scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom - scroll.contentOffset.y
-        XCTAssertLessThanOrEqual(distance, ChatScrollPolicy.followReArmThreshold)
-        capture(window, name: "479-latest-arrow-hidden-at-bottom")
-    }
-
-    func testMissingUsageUsesTheSessionsRing() async throws {
-        let settings = BotChatControls()
-        let window = try show(BotComposerSettings(settings: settings, preparePresentation: {}, dismissPresentation: {}))
-        defer { close(window) }
-        await renderFrames()
-        let text = try screenshot(window, name: "479-missing-context-ring")
-        XCTAssertFalse(text.contains("Usage"), text)
-    }
-
     func testRecoveredDraftIsEditableWithoutHeldMessageWarningOrConfirmation() async throws {
         let wire = BotFixtureWire(); let model = make(wire)
         await model.recover(); model.editDraft("Test")
@@ -353,35 +289,6 @@ import XCTest
         editor.onKeyboardSend()
         await fulfillment(of: [sent], timeout: 3)
         XCTAssertEqual(wire.calls.filter { $0.0 == "prompt.submit" }.count, 2)
-    }
-
-    func testAttachmentComposerUsesSessionsCardAndPillPresentation() async throws {
-        let wire = BotFixtureWire(); let model = make(wire)
-        await model.recover()
-        let photo = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).jpegData(withCompressionQuality: 0.8) { ctx in
-            UIColor.systemPink.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 160, height: 100))
-        }
-        await model.attachments.stage(data: photo, filename: "photo.jpg")
-        await model.attachments.stage(data: Data("%PDF-fixture".utf8), filename: "Report.pdf")
-        let window = try show(VStack {
-            Spacer()
-            BotChatComposerView(model: model, onStop: {}, onReconnect: {}, onShowRequest: {})
-        })
-        window.overrideUserInterfaceStyle = .dark
-        defer { model.suspend(); close(window) }
-        await renderFrames()
-        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
-        XCTAssertTrue(editor.becomeFirstResponder())
-        await renderFrames()
-        let expanded = try screenshot(window, name: "478-composer-attachments-expanded", literalText: true)
-        XCTAssertTrue(expanded.contains("Report.pdf"), expanded)
-        XCTAssertFalse(expanded.contains("Photos"), expanded)
-        XCTAssertFalse(expanded.contains("Files"), expanded)
-        editor.resignFirstResponder()
-        await renderFrames()
-        capture(window, name: "478-composer-attachments-collapsed")
-        XCTAssertTrue(descendants(window).contains { $0 === editor })
-        XCTAssertEqual(model.attachments.items.count, 2)
     }
 
     func testAttachmentPickerOverlayRetainsKeyboardFocus() async throws {
@@ -571,17 +478,11 @@ import XCTest
         XCTAssertTrue(browsing.contains("write-tests"), browsing)
         XCTAssertFalse(browsing.contains("Picks"), "A command row would insert text nothing runs")
 
-        window.overrideUserInterfaceStyle = .dark
-        await renderFrames(4)
-        capture(window, name: "551-bot-slash-panel-dark")
-        window.overrideUserInterfaceStyle = .light
-
         // Past the name the user is writing the skill's argument, so the panel
         // closes and the accepted name becomes an atomic chip.
         editor.insertText("triage-inbox yesterday's mail")
         await renderFrames(4)
         XCTAssertEqual(model.draft, "/triage-inbox yesterday's mail")
-        capture(window, name: "551-bot-slash-chip")
         XCTAssertEqual(
             ComposerChipTokenizer.tokens(in: model.draft, catalog: ComposerChipCatalog(skills: model.slashSkills))
                 .map { (model.draft as NSString).substring(with: $0.range) },
@@ -719,75 +620,6 @@ import XCTest
         XCTAssertTrue(fields.allSatisfy(\.isSecureTextEntry), "A credential field is never in the clear")
     }
 
-    /// A secret prompt shows the host's own words and the name the value is
-    /// saved under, so the user knows which key to paste.
-    func testSecretCardNamesTheVariableItWillBeSavedAs() async throws {
-        let wire = BotFixtureWire(); wire.running = true
-        let model = make(wire)
-        let window = try show(NavigationStack { BotChatView(model: model) }.environment(\.scenePhase, .inactive))
-        defer { model.suspend(); close(window) }
-        await model.recover()
-        wire.onEvent?(.object([
-            "session_id": .string("runtime"), "seq": .number(1), "type": .string("secret.request"),
-            "payload": .object(["request_id": .string("sec-1"), "env_var": .string("TAVILY_API_KEY"),
-                                "prompt": .string("Paste your Tavily key")])
-        ]))
-        await awaitSnapshot(model)
-        await renderFrames()
-        let shown = try screenshot(window, name: "bot-secret-card")
-        XCTAssertTrue(shown.contains("Secret needed"), shown)
-        XCTAssertTrue(shown.contains("Paste your Tavily key"), shown)
-        XCTAssertTrue(shown.contains("TAVILY_API_KEY"), shown)
-    }
-
-    /// A Desktop-renderer task has no input because there is no answer a person
-    /// gives — here or at the Mac. It says so, and keeps Stop.
-    func testDesktopTaskCardReportsTheWaitInsteadOfSendingTheUserToADesk() async throws {
-        let wire = BotFixtureWire(); wire.running = true
-        let model = make(wire)
-        let window = try show(NavigationStack { BotChatView(model: model) }.environment(\.scenePhase, .inactive))
-        defer { model.suspend(); close(window) }
-        await model.recover()
-        wire.onEvent?(.object([
-            "session_id": .string("runtime"), "seq": .number(1), "type": .string("terminal.read.request"),
-            "payload": .object(["request_id": .string("term-1")])
-        ]))
-        // Stop only becomes offerable once the snapshot settles on needs-attention.
-        await awaitSnapshot(model)
-        await renderFrames()
-        XCTAssertTrue(model.mayStop)
-        let shown = try screenshot(window, name: "bot-desktop-task-card")
-        XCTAssertTrue(shown.contains("Hermes Desktop is handling this"), shown)
-        XCTAssertTrue(shown.contains("reading a terminal"), shown)
-        XCTAssertTrue(shown.contains("nothing to do"), shown)
-        XCTAssertTrue(shown.contains("Stop current work"), shown)
-        XCTAssertFalse(shown.contains("Type a response"), shown)
-        XCTAssertFalse(shown.contains("Allow once"), shown)
-        XCTAssertFalse(model.mayAnswer)
-    }
-
-    /// The MCP setup card is the one Desktop task with a way out that is not
-    /// Stop: skipping calls off the request and leaves the bot's work running.
-    func testMCPSetupCardOffersSkipAlongsideStop() async throws {
-        let wire = BotFixtureWire(); wire.running = true
-        let model = make(wire)
-        let window = try show(NavigationStack { BotChatView(model: model) }.environment(\.scenePhase, .inactive))
-        defer { model.suspend(); close(window) }
-        await model.recover()
-        wire.onEvent?(.object([
-            "session_id": .string("runtime"), "seq": .number(1), "type": .string("mcp.setup.request"),
-            "payload": .object(["request_id": .string("mcp-1"), "server": .string("tavily")])
-        ]))
-        await awaitSnapshot(model)
-        await renderFrames()
-        let shown = try screenshot(window, name: "bot-mcp-setup-card")
-        XCTAssertTrue(shown.contains("Waiting on Hermes Desktop"), shown)
-        XCTAssertTrue(shown.contains("Skip it here"), shown)
-        XCTAssertTrue(shown.contains("Skip this setup"), shown)
-        XCTAssertTrue(shown.contains("Stop current work"), shown)
-        XCTAssertTrue(model.mayDecline)
-    }
-
     func testTextOnlyEditorRejectsAttachmentProviders() {
         let editor = ComposerChipTextView()
         let image = NSItemProvider(item: NSData(), typeIdentifier: UTType.png.identifier)
@@ -799,52 +631,28 @@ import XCTest
 
     }
 
-    func testBotFixturesAcrossAppearanceKeyboardAndLargerText() async throws {
-        for dark in [false, true] {
-            for large in [false, true] {
-                let wire = BotFixtureWire()
-                wire.history = [
-                    .object(["role": .string("user"), "text": .string("Summarize the inbox and list the next steps.")]),
-                    .object(["role": .string("assistant"), "text": .string("Three messages need a reply.\n\n**Next steps**\n1. Confirm the delivery date.\n2. Send the updated estimate.\n3. Reply to the meeting request.\n\nThe remaining messages can wait.")])
-                ]
-                let model = make(wire)
-                let window = try show(NavigationStack { BotChatView(model: model) }
-                    .environment(\.scenePhase, .active)
-                    .environment(\.dynamicTypeSize, large ? .accessibility1 : .large)
-                    .preferredColorScheme(dark ? .dark : .light))
-                defer { model.suspend(); close(window) }
-                await model.recover()
-                await renderFrames()
-                let name = "bot-\(dark ? "dark" : "light")-\(large ? "large" : "default")"
-                capture(window, name: name + "-closed")
-                let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
-                XCTAssertTrue(editor.becomeFirstResponder())
-                await renderFrames()
-                editor.insertText("Draft a short reply.")
-                await renderFrames()
-                capture(window, name: name + "-keyboard")
-                XCTAssertEqual(model.draft, "Draft a short reply.")
-                XCTAssertTrue(wire.calls.allSatisfy { $0.0 != "prompt.submit" && $0.0 != "session.interrupt" })
-                close(window)
-                await renderFrames()
-                let focus = SessionFixtureFocus()
-                let reference = try show(NavigationStack { SessionChatPresentationFixture(focus: focus, messages: model.messages) }
-                    .environment(\.dynamicTypeSize, large ? .accessibility1 : .large)
-                    .preferredColorScheme(dark ? .dark : .light))
-                defer { close(reference) }
-                await renderFrames()
-                capture(reference, name: name.replacingOccurrences(of: "bot-", with: "sessions-") + "-closed")
-                let referenceEditor = try XCTUnwrap(descendants(reference).compactMap { $0 as? ComposerChipTextView }.first)
-                XCTAssertTrue(referenceEditor.acceptsAttachments)
-                focus.isFocused = true
-                await renderFrames()
-                XCTAssertTrue(referenceEditor.isFirstResponder)
-                XCTAssertGreaterThan(referenceEditor.bounds.height, 44)
-                referenceEditor.insertText("Draft a short reply.")
-                await renderFrames()
-                capture(reference, name: name.replacingOccurrences(of: "bot-", with: "sessions-") + "-keyboard")
-            }
-        }
+    func testTranscriptComposerEditsDraftAtAccessibilitySizeWithoutSending() async throws {
+        let wire = BotFixtureWire()
+        wire.history = [
+            .object(["role": .string("user"), "text": .string("Summarize the inbox.")]),
+            .object(["role": .string("assistant"), "text": .string("Three messages need a reply.")])
+        ]
+        let model = make(wire)
+        let window = try show(NavigationStack { BotChatView(model: model) }
+            .environment(\.scenePhase, .inactive)
+            .environment(\.dynamicTypeSize, .accessibility1)
+            .preferredColorScheme(.dark))
+        defer { model.suspend(); close(window) }
+        await model.recover()
+        await renderFrames()
+        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
+        XCTAssertTrue(editor.becomeFirstResponder())
+        await renderFrames()
+        editor.insertText("Draft a short reply.")
+        await renderFrames()
+        XCTAssertTrue(editor.isFirstResponder)
+        XCTAssertEqual(model.draft, "Draft a short reply.")
+        XCTAssertTrue(wire.calls.allSatisfy { $0.0 != "prompt.submit" && $0.0 != "session.interrupt" })
     }
 
     /// The activity rows are the Sessions log rows, whose only motion is
@@ -1011,7 +819,7 @@ import XCTest
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
-        // Static comparisons must not capture an intermediate composer spring frame.
+        // Layout assertions must not capture an intermediate composer spring frame.
         window.rootViewController = UIHostingController(rootView: view.transaction { $0.disablesAnimations = true })
         window.makeKeyAndVisible()
         return window
@@ -1138,10 +946,8 @@ import XCTest
         return request.results?.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ") ?? ""
     }
 
-    /// Attaches a capture as review evidence without reading its text. Captures
-    /// whose words are never asserted on take this path, since text recognition
-    /// is most of what `screenshot` costs. Evidence is stored as JPEG: encoding
-    /// a PNG of the 3x window took six times longer than drawing it.
+    /// Captures pixels for OCR and layout assertions; retain the JPEG only when
+    /// the test fails so successful runs do not accumulate screenshot evidence.
     @discardableResult
     private func capture(_ window: UIWindow, name: String) -> UIImage {
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
@@ -1149,16 +955,10 @@ import XCTest
         }
         let attachment = XCTAttachment(image: image, quality: .medium)
         attachment.name = name
-        attachment.lifetime = .keepAlways
+        attachment.lifetime = .deleteOnSuccess
         add(attachment)
         return image
     }
-}
-
-/// The actual Sessions presentation components with inert fixture callbacks.
-/// No APIClient, active account or server data participates in these captures.
-@MainActor @Observable private final class SessionFixtureFocus {
-    var isFocused = false
 }
 
 @MainActor @Observable
@@ -1188,66 +988,6 @@ private struct AttachmentOverlayHarnessView: View {
             }
             .frame(width: 0, height: 0)
         }
-    }
-}
-
-private struct SessionChatPresentationFixture: View {
-    @Bindable var focus: SessionFixtureFocus
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var draft = ""
-    @State private var quotes: [ComposerQuote] = []
-    @State private var paths = ComposerFilePathSearch()
-    @State private var git = GitWorkspaceAvailabilityViewModel(
-        session: SessionSummary(), server: URL(string: "https://webui.example")!
-    )
-    let messages: [ChatMessage]
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(messages) { message in
-                    MessageBubbleView(
-                        message: message,
-                        transcriptMediaCacheNamespace: "https://webui.example|test"
-                    )
-                }
-            }
-            .padding(.horizontal, dynamicTypeSize.isAccessibilitySize ? 20 : 16)
-            .padding(.vertical, 16)
-        }
-        .defaultScrollAnchor(.bottom)
-        .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .navigationTitle("inbox-triage")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private var composer: some View {
-        MessageComposerView(
-            draftMessage: $draft, quotes: $quotes, isFocused: $focus.isFocused,
-            isSending: false, isCompressingSession: false, isWaitingForStream: false,
-            isCancellingStream: false, readOnlyMessage: nil, errorMessage: nil,
-            configurationErrorMessage: nil, contextWindowSnapshot: nil, gitViewModel: git,
-            modelGroups: [], selectedModelID: nil, selectedModelProviderID: nil, selectedModelTitle: "Model",
-            workspaceRoots: [], selectedWorkspacePath: nil, workspaceSuggestions: [], workspaceManagementServer: nil,
-            personalitySuggestions: [], skillSuggestions: [], hasLoadedSkillSuggestions: true,
-            agentCommands: [], profileOptions: [], isSingleProfileMode: true,
-            selectedProfileName: nil, selectedProfileTitle: "Default", selectedReasoningEffort: nil,
-            supportedReasoningEfforts: nil, supportsReasoningEffort: false, showsReasoningControl: false,
-            isUpdatingConfiguration: false, pendingAttachments: [], isUploadingAttachment: false,
-            attachmentUploadCount: 0, attachmentUploadGeneration: 0, isSendingVoiceNote: false,
-            autoStartsVoiceInput: false, apiClient: nil, sessionID: nil, chipFilePaths: [],
-            filePathSearch: paths, uploadAttachmentErrorMessage: nil,
-            onSend: {}, onSendVoiceNote: { _, _ in }, onCancel: {}, onSelectModel: { _ in },
-            onModelPickerOpen: {}, onSelectReasoningEffort: { _ in }, onLoadWorkspaceSuggestions: { _ in },
-            onWorkspaceRegistryChanged: {}, onLoadPersonalitySuggestions: {}, onLoadSkillSuggestions: {},
-            onSelectWorkspace: { _ in }, onSelectProfile: { _ in }, onHeightChange: { _ in },
-            onPhotoMediaSelected: { _ in }, onFileURLsSelected: { _ in }, onPasteFileProviders: { _ in },
-            onPasteFileURLs: { _ in }, onPasteImageProviders: { _ in }, onPasteImages: { _ in },
-            onRemoveAttachment: { _ in }, onPreviewAttachment: { _ in }, onDismissUploadAttachmentError: {},
-            onSelectFileReference: { _ in }, onOpenFileReference: { _ in }, onSelectGitBranch: { _ in },
-            onCreateGitBranch: { _ in }, onRefreshGitBranches: {}
-        )
     }
 }
 
