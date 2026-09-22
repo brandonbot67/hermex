@@ -655,6 +655,24 @@ import XCTest
         XCTAssertTrue(wire.calls.allSatisfy { $0.0 != "prompt.submit" && $0.0 != "session.interrupt" })
     }
 
+    func testSessionsComposerRetainsFocusAndAttachmentsAtAccessibilitySize() async throws {
+        let focus = SessionFixtureFocus()
+        let window = try show(SessionChatPresentationFixture(focus: focus)
+            .environment(\.dynamicTypeSize, .accessibility1))
+        defer { close(window) }
+        await renderFrames()
+        let editor = try XCTUnwrap(descendants(window).compactMap { $0 as? ComposerChipTextView }.first)
+        XCTAssertTrue(editor.acceptsAttachments)
+        focus.isFocused = true
+        await renderFrames()
+        XCTAssertTrue(editor.isFirstResponder)
+        XCTAssertGreaterThan(editor.bounds.height, 44)
+        editor.insertText("Draft a short reply.")
+        await renderFrames()
+        XCTAssertTrue(editor.isFirstResponder)
+        XCTAssertEqual(editor.sourceText, "Draft a short reply.")
+    }
+
     /// The activity rows are the Sessions log rows, whose only motion is
     /// `ChatMotion.disclosure`, which is nil under Reduce Motion (covered in
     /// `TranscriptDisplayModelTests`); the Bot views add no animation of their own.
@@ -988,6 +1006,56 @@ private struct AttachmentOverlayHarnessView: View {
             }
             .frame(width: 0, height: 0)
         }
+    }
+}
+
+/// Holds the Sessions composer's external focus binding for hosted integration tests.
+@MainActor @Observable private final class SessionFixtureFocus {
+    var isFocused = false
+}
+
+private struct SessionChatPresentationFixture: View {
+    @Bindable var focus: SessionFixtureFocus
+    @State private var draft = ""
+    @State private var quotes: [ComposerQuote] = []
+    @State private var paths = ComposerFilePathSearch()
+    @State private var git = GitWorkspaceAvailabilityViewModel(
+        session: SessionSummary(), server: URL(string: "https://webui.example")!
+    )
+
+    var body: some View {
+        VStack {
+            Spacer()
+            composer
+        }
+    }
+
+    private var composer: some View {
+        MessageComposerView(
+            draftMessage: $draft, quotes: $quotes, isFocused: $focus.isFocused,
+            isSending: false, isCompressingSession: false, isWaitingForStream: false,
+            isCancellingStream: false, readOnlyMessage: nil, errorMessage: nil,
+            configurationErrorMessage: nil, contextWindowSnapshot: nil, gitViewModel: git,
+            modelGroups: [], selectedModelID: nil, selectedModelProviderID: nil, selectedModelTitle: "Model",
+            workspaceRoots: [], selectedWorkspacePath: nil, workspaceSuggestions: [], workspaceManagementServer: nil,
+            personalitySuggestions: [], skillSuggestions: [], hasLoadedSkillSuggestions: true,
+            agentCommands: [], profileOptions: [], isSingleProfileMode: true,
+            selectedProfileName: nil, selectedProfileTitle: "Default", selectedReasoningEffort: nil,
+            supportedReasoningEfforts: nil, supportsReasoningEffort: false, showsReasoningControl: false,
+            isUpdatingConfiguration: false, pendingAttachments: [], isUploadingAttachment: false,
+            attachmentUploadCount: 0, attachmentUploadGeneration: 0, isSendingVoiceNote: false,
+            autoStartsVoiceInput: false, apiClient: nil, sessionID: nil, chipFilePaths: [],
+            filePathSearch: paths, uploadAttachmentErrorMessage: nil,
+            onSend: {}, onSendVoiceNote: { _, _ in }, onCancel: {}, onSelectModel: { _ in },
+            onModelPickerOpen: {}, onSelectReasoningEffort: { _ in }, onLoadWorkspaceSuggestions: { _ in },
+            onWorkspaceRegistryChanged: {}, onLoadPersonalitySuggestions: {}, onLoadSkillSuggestions: {},
+            onSelectWorkspace: { _ in }, onSelectProfile: { _ in }, onHeightChange: { _ in },
+            onPhotoMediaSelected: { _ in }, onFileURLsSelected: { _ in }, onPasteFileProviders: { _ in },
+            onPasteFileURLs: { _ in }, onPasteImageProviders: { _ in }, onPasteImages: { _ in },
+            onRemoveAttachment: { _ in }, onPreviewAttachment: { _ in }, onDismissUploadAttachmentError: {},
+            onSelectFileReference: { _ in }, onOpenFileReference: { _ in }, onSelectGitBranch: { _ in },
+            onCreateGitBranch: { _ in }, onRefreshGitBranches: {}
+        )
     }
 }
 
