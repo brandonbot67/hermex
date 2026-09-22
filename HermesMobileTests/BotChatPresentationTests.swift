@@ -723,21 +723,12 @@ import XCTest
             .object(["id": .string("b"), "content": .string("Draft the estimate reply"), "status": .string("in_progress")])
         ])])
         let model = make(wire)
-        let window = try show(NavigationStack { BotChatView(model: model) }.environment(\.scenePhase, .active))
+        let window = try show(NavigationStack { BotChatView(model: model) }.environment(\.scenePhase, .inactive))
         defer { model.suspend(); close(window) }
-        // Let the view own its one recovery. Starting another here can race
-        // the view's .task and erase the live event after this test sends it.
-        let connected = expectation(description: "view recovered")
-        func observeConnection() {
-            if model.connectionState == .connected { connected.fulfill(); return }
-            withObservationTracking {
-                _ = model.connectionState
-            } onChange: {
-                Task { @MainActor in observeConnection() }
-            }
-        }
-        observeConnection()
-        await fulfillment(of: [connected], timeout: 3)
+        // This test owns recovery so the view's startup task cannot race the
+        // injected activity event. Connection lifecycle is covered separately.
+        await model.recover()
+        XCTAssertEqual(model.connectionState, .connected)
         wire.onEvent?(.object([
             "session_id": .string("runtime"), "seq": .number(1), "type": .string("tool.start"),
             "payload": .object(["tool_id": .string("t1"), "name": .string("write_file"), "args": .object(["path": .string("reply-delivery.md")])])
