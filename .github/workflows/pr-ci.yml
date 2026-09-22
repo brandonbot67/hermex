@@ -137,6 +137,8 @@ jobs:
 
       - name: Test without building
         id: tests
+        # Bound worker clone/boot and suite execution, leaving time for diagnostics.
+        timeout-minutes: 30
         env:
           SIMULATOR_UDID: ${{ steps.sim.outputs.udid }}
         run: |

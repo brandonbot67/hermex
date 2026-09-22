@@ -126,6 +126,10 @@ CI resolves the device UDID and runs the complete suite with one test worker.
 Xcode owns that worker's simulator clone and boot. Explicit preboot plus fully
 serial execution did not improve the hosted trial, so retain the one-worker
 configuration unless new measurements justify changing it.
+The test step has a 30-minute timeout covering worker preparation and the full
+suite, so a stalled worker does not consume the 90-minute job budget and prevent
+failure diagnostics from running. This is a combined limit, not a separate
+five-minute boot deadline.
 
 The Actions summary records phase timings, the failed phase, assertion messages,
 and slow tests. Failure artifacts include setup/build/test logs and any result
