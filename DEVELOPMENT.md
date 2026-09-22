@@ -117,6 +117,20 @@ and leaves other jobs and the simulator itself alone.
 
 Runner checks: `python3 -m unittest discover -s scripts/tests -v`.
 
+## PR CI
+
+`.github/workflows/pr-ci.yml` pins the hosted Xcode path, iOS runtime, and phone
+model. Update these together after checking the runner's installed software;
+a missing pin fails setup rather than selecting another toolchain or runtime.
+CI resolves the device UDID, waits for boot, and runs the complete suite serially.
+
+The Actions summary records phase timings, the failed phase, assertion messages,
+and slow tests. Failure artifacts include build/boot/test logs and any result
+bundle. A missing bundle does not establish an infrastructure flake; inspect the
+failed phase before rerunning. The reporter cannot turn a failed build or test
+green. Validate workflow changes with `actionlint .github/workflows/pr-ci.yml`
+and `python3 -m unittest discover -s ci -p 'test_*.py'`.
+
 ## Build and Launch With XcodeBuildMCP
 
 Defaults and the verification flow live in `AGENTS.md` § Verifying. Human/CLI equivalents:
