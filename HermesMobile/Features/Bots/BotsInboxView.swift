@@ -3,7 +3,6 @@ import SwiftUI
 @MainActor struct BotsInboxView: View {
     @Environment(\.scenePhase) private var scenePhase
     let server: URL
-    let showSessions: () -> Void
     /// The bot a deep link named, resolved here because this is where the live roster
     /// is. Cleared once this inbox has settled, whether or not it matched (#554).
     @Binding private var pendingDestination: BotDestination?
@@ -30,11 +29,9 @@ import SwiftUI
 
     init(
         server: URL,
-        pendingDestination: Binding<BotDestination?> = .constant(nil),
-        showSessions: @escaping () -> Void
+        pendingDestination: Binding<BotDestination?> = .constant(nil)
     ) {
         self.server = server
-        self.showSessions = showSessions
         _pendingDestination = pendingDestination
         _inbox = State(initialValue: BotInbox(server: server))
     }
@@ -42,13 +39,6 @@ import SwiftUI
     var body: some View {
         let rows = inbox.rows(matching: "")
         List {
-            Picker("Screen", selection: Binding(get: { true }, set: { if !$0 { showSessions() } })) {
-                Text("Sessions").tag(false)
-                Text("Bots").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .listRowSeparator(.hidden)
-
             if inbox.connection != nil {
                 if let errorMessage = inbox.errorMessage {
                     Text(errorMessage).font(.callout)
@@ -116,7 +106,13 @@ import SwiftUI
             toast = nil
         }
         .listStyle(.plain)
+        // Pushed from the session list's Bots row: the back button and the
+        // toolbar are the whole header, so the pinned tiles sit at the top. The
+        // title still names the screen for VoiceOver and for a pushed chat's
+        // back button; only its visible text is removed.
         .navigationTitle("Bots")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Search bots and messages", systemImage: "magnifyingglass") { showingSearch = true }

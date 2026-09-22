@@ -47,7 +47,6 @@ struct SessionListView: View {
     @State private var projectPendingDeletion: ProjectSummary?
     @State private var projectPendingRename: ProjectSummary?
     @State private var searchText = ""
-    @State private var showsBots = false
     @State private var isSearchVisible = false
     @State private var isSearchFocused = false
     @State private var searchChromeIsExpanded = false
@@ -156,10 +155,12 @@ struct SessionListView: View {
                     request: { requestReview() }
                 )
             }
-            .onChange(of: pendingDeepLinkedSessionID) { if pendingDeepLinkedSessionID != nil { showsBots = false } }
-            .onChange(of: requestedNewChat) { if requestedNewChat != nil { showsBots = false } }
-            .onChange(of: pendingSharedImport?.reservationID) { if pendingSharedImport != nil { showsBots = false } }
-            .onChange(of: isBotModeEnabled) { if !isBotModeEnabled { showsBots = false } }
+            // Turning the gate off while the Bots inbox is open pops back to the list.
+            .onChange(of: isBotModeEnabled) {
+                if !isBotModeEnabled, navigationState.destination == .utility(.bots) {
+                    navigationState.clearDestination()
+                }
+            }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if hasWaitingSharedImport {
                     waitingSharedImportBanner
@@ -369,7 +370,7 @@ struct SessionListView: View {
     private var isQuietSessionListVisible: Bool {
         guard case .loggedIn(let activeServer) = authManager.state, activeServer == server else { return false }
         return scenePhase == .active && didCompleteInitialLoad
-            && navigationState.destination == nil && !showsBotsInbox
+            && navigationState.destination == nil
             && pendingDeepLinkedSessionID == nil && requestedNewChat == nil
             && pendingSharedImport == nil && !hasWaitingSharedImport
             && !isSearchingSessions && !viewModel.isViewingCachedData
@@ -420,27 +421,19 @@ struct SessionListView: View {
 
     /// A bot deep link opens this server's Bots inbox, which owns resolving it. Only
     /// this view's own server routes: a link for another server switches servers
-    /// first, which rebuilds this view against it (#554).
+    /// first, which rebuilds this view against it (#554). An inbox already on
+    /// screen resolves the link itself, so it is not pushed a second time.
     private func showBotsForPendingDestination() {
-        guard isBotModeEnabled, let destination = pendingBotDestination, destination.server == server else {
+        guard isBotModeEnabled, let destination = pendingBotDestination, destination.server == server,
+              navigationState.destination != .utility(.bots) else {
             return
         }
-        showsBots = true
-    }
-
-    private var showsBotsInbox: Bool {
-        BotModeGate.showsBotsInbox(isEnabled: isBotModeEnabled, userPickedBots: showsBots)
+        selectDestination(.bots)
     }
 
     @ViewBuilder
     private var navigationContainer: some View {
-        if showsBotsInbox {
-            NavigationStack {
-                BotsInboxView(server: server, pendingDestination: $pendingBotDestination) {
-                    showsBots = false
-                }
-            }
-        } else if horizontalSizeClass == .regular {
+        if horizontalSizeClass == .regular {
             NavigationSplitView {
                 sessionListSurface
                     .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 420)
@@ -528,6 +521,8 @@ struct SessionListView: View {
             switch destination {
             case .settings(let scrollTo):
                 SettingsView(authManager: authManager, server: server, initialScrollTarget: scrollTo)
+            case .bots:
+                BotsInboxView(server: server, pendingDestination: $pendingBotDestination)
             case .tasks:
                 TasksView(server: server, onAPIError: authManager.handleAPIError)
             case .kanban:
@@ -574,15 +569,6 @@ struct SessionListView: View {
             if showsTipCard {
                 TipJarCard()
                     .sessionsScreenListRow()
-            }
-
-            if isBotModeEnabled {
-                Picker("Screen", selection: $showsBots) {
-                    Text("Sessions").tag(false)
-                    Text("Bots").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .sessionsScreenListRow()
             }
 
             if viewModel.isViewingCachedData {
@@ -890,6 +876,7 @@ struct SessionListView: View {
 
     private var sidebarSectionVisibility: SidebarSectionVisibility {
         SidebarSectionVisibility(
+            bots: isBotModeEnabled,
             tasks: showsTasksSection,
             kanban: showsKanbanSection,
             skills: showsSkillsSection,
@@ -1356,7 +1343,6 @@ struct SessionListView: View {
     private func openPendingWebuiPush() async {
         guard let destination = pendingWebuiPush, destination.server == server,
               authManager.state == .loggedIn(server: server), !Task.isCancelled else { return }
-        showsBots = false
         sessionOpenTask?.cancel()
         viewModel.invalidateSessionOpening()
         navigationState.openSessionList()
@@ -1632,6 +1618,8 @@ enum SessionListUtilityDestination: Hashable, Identifiable {
     /// Optional section to scroll to when Settings opens — "Manage Servers"
     /// passes `.servers`, a plain avatar tap passes `nil` (#283).
     case settings(SettingsScrollAnchor?)
+    /// The direct-Hermes Bots inbox, shown while Bot Mode (beta) is on.
+    case bots
     case tasks
     case kanban
     case skills

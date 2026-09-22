@@ -121,6 +121,16 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                 }
 
+                SettingsCard(title: String(localized: "Preview")) {
+                    SettingsToggleRow(
+                        title: String(localized: "Bot Mode (beta)"),
+                        systemImage: "cpu",
+                        isOn: $isBotModeEnabled
+                    )
+
+                    SettingsFootnote(String(localized: "Bot Mode is unfinished. It adds a Bots row to the main screen for your direct Hermes bots. Each server’s Hermes connection is available with it off."))
+                }
+
                 SettingsCard(title: String(localized: "Appearance")) {
                     SettingsPickerRow(
                         title: String(localized: "Theme"),
@@ -390,16 +400,6 @@ struct SettingsView: View {
                     )
 
                     SettingsFootnote(String(localized: "Turn off the entries you never use to shorten the top of the session list. Each one is the only way into its screen, so turn it back on here when you need it again."))
-                }
-
-                SettingsCard(title: String(localized: "Preview")) {
-                    SettingsToggleRow(
-                        title: String(localized: "Bot Mode (beta)"),
-                        systemImage: "cpu",
-                        isOn: $isBotModeEnabled
-                    )
-
-                    SettingsFootnote(String(localized: "Bot Mode is unfinished. It adds a Sessions/Bots switch to the session list. Each server’s Hermes connection is available with it off."))
                 }
 
                 SettingsCard(title: String(localized: "Sessions")) {

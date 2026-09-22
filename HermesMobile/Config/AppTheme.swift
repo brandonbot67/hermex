@@ -340,14 +340,6 @@ enum BotModeGate {
     static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
         defaults.bool(forKey: isEnabledKey)
     }
-
-    /// The session list shows the Bots inbox only while the gate is on and the
-    /// user picked Bots. External routes (deep links, App Intents, shared
-    /// imports, Live Activity taps) clear the pick before this runs, so they
-    /// always land on Sessions regardless of the gate.
-    static func showsBotsInbox(isEnabled: Bool, userPickedBots: Bool) -> Bool {
-        isEnabled && userPickedBots
-    }
 }
 
 /// Pure helpers for the few *physical* layout values SwiftUI does not mirror on

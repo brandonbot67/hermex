@@ -458,7 +458,7 @@ final class SidebarSectionVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.showsAnyUtilityLink)
     }
 
-    func testUtilityLinkRowDropsOnlyWhenAllFiveAreHidden() {
+    func testUtilityLinkRowDropsOnlyWhenEveryLinkIsHidden() {
         var visibility = SidebarSectionVisibility.showAll
         visibility.tasks = false
         visibility.kanban = false
@@ -466,6 +466,8 @@ final class SidebarSectionVisibilityTests: XCTestCase {
         visibility.memory = false
         visibility.insights = false
 
+        XCTAssertTrue(visibility.showsAnyUtilityLink, "the Bots row keeps the row alive while Bot Mode is on")
+        visibility.bots = false
         XCTAssertFalse(visibility.showsAnyUtilityLink)
     }
 

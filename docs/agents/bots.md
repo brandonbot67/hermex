@@ -563,17 +563,24 @@ only live signal, `worker_session` heartbeats, describes kanban and tool
 workers rather than the conversation.
 
 Bot Mode ships behind `BotModeGate`, one app-wide `@AppStorage` bool that is off
-by default and owned by the Settings "Bot Mode (beta)" row (#496). Off hides the
-Sessions/Bots switch, the Bots inbox and the per-server Bot connection row;
-nothing else changes, and Bot connections and drafts stay in the Keychain until
-it is turned on again. The gate is not per-server because it hides screens
-rather than storing user data. It is removed, together with its Settings row
-and `BotModeGateTests`, in the release PR that ships Bot Mode, not before.
+by default and owned by the Settings "Bot Mode (beta)" row (#496), which sits
+under Archived Sessions so new users notice it. Off hides the Bots row on the
+session list and pops the Bots inbox if it is open; nothing else changes, and
+Bot connections and drafts stay in the Keychain until it is turned on again. The
+gate is not per-server because it hides screens rather than storing user data.
+It is removed, together with its Settings row and `BotModeGateTests`, in the
+release PR that ships Bot Mode, not before.
+
+The Bots inbox is a utility destination of the session list, pushed like Tasks
+(the detail column on iPad), so the system back button returns to Sessions and
+bot chats push on from the inbox. It has no title of its own: the back button
+and its search / new / connection toolbar are the whole header.
 
 New Bot code belongs only to the main app and XCTest target, apart from the Live
 Activity below. Share-extension and App Intent commands still route to webui
 sessions.
-The Sessions/Bots switch returns to Sessions for existing external entry points.
+Existing external entry points (session deep links, App Intents, shared imports,
+webui push) replace the navigation destination, which pops an open Bots inbox.
 
 The implementation issue links the installed contract evidence, signed-build and
 test results, and remaining manual gates. Physical-phone transport, native
